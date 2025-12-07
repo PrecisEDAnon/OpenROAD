@@ -2033,8 +2033,11 @@ LibertyCellSeq Resizer::getSwappableCells(LibertyCell* source_cell)
     return {};
   }
 
-  LibertyCellSeq swappable_cells;
+  LibertyCellSeq filtered_cells;
+  LibertyCellSeq candidate_cells;
   LibertyCellSeq* equiv_cells = sta_->equivCells(source_cell);
+  const bool user_function_filter = source_cell->userFunctionClass();
+  const bool filters_requested = match_cell_footprint_ || user_function_filter;
 
   if (equiv_cells) {
     int64_t source_cell_area = master->getArea();
@@ -2081,30 +2084,56 @@ LibertyCellSeq Resizer::getSwappableCells(LibertyCell* source_cell)
         }
       }
 
+      candidate_cells.push_back(equiv_cell);
+
+      bool passes_optional_filters = true;
       if (match_cell_footprint_) {
         const bool footprints_match = sta::stringEqIf(source_cell->footprint(),
                                                       equiv_cell->footprint());
         if (!footprints_match) {
-          continue;
+          passes_optional_filters = false;
         }
       }
 
-      if (source_cell->userFunctionClass()) {
+      if (user_function_filter) {
         const bool user_function_classes_match = sta::stringEqIf(
             source_cell->userFunctionClass(), equiv_cell->userFunctionClass());
         if (!user_function_classes_match) {
-          continue;
+          passes_optional_filters = false;
         }
       }
 
-      swappable_cells.push_back(equiv_cell);
+      if (passes_optional_filters) {
+        filtered_cells.push_back(equiv_cell);
+      }
     }
   } else {
-    swappable_cells.push_back(source_cell);
+    candidate_cells.push_back(source_cell);
+    filtered_cells.push_back(source_cell);
   }
 
-  swappable_cells_cache_[source_cell] = swappable_cells;
-  return swappable_cells;
+  bool fell_back_to_equiv = false;
+  LibertyCellSeq result;
+  if (!filtered_cells.empty()) {
+    result = std::move(filtered_cells);
+  } else if (filters_requested && !candidate_cells.empty()) {
+    fell_back_to_equiv = true;
+    result = std::move(candidate_cells);
+  } else {
+    result = std::move(candidate_cells);
+  }
+
+  if (fell_back_to_equiv) {
+    logger_->warn(
+        RSZ,
+        170,
+        "No swappable cells for {} with requested filters; falling back to "
+        "unfiltered equivalents.",
+        source_cell->name());
+  }
+
+  swappable_cells_cache_[source_cell] = std::move(result);
+  return swappable_cells_cache_[source_cell];
 }
 
 size_t getCommonLength(const std::string& string1, const std::string& string2)
@@ -4980,6 +5009,10 @@ void Resizer::resetInputSlews()
 
 void Resizer::eliminateDeadLogic(bool clean_nets)
 {
+  if (!eliminate_dead_logic_enabled_) {
+    return;
+  }
+
   std::vector<const Instance*> queue;
   std::set<const Instance*> kept_instances;
 
