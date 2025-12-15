@@ -46,6 +46,8 @@ class TimingBase
   bool executeTimingDriven(bool run_journal_restore);
 
  private:
+  void loadEnvOverrides();
+
   rsz::Resizer* rs_ = nullptr;
   utl::Logger* log_ = nullptr;
   std::shared_ptr<NesterovBaseCommon> nbc_;
@@ -53,6 +55,7 @@ class TimingBase
   std::vector<int> timingNetWeightOverflow_;
   std::vector<int> timingOverflowChk_;
   float net_weight_max_ = 5;
+  float net_weight_exponent_ = 1.0;
   void initTimingOverflowChk();
 };
 

@@ -5,9 +5,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -22,7 +24,10 @@ namespace gpl {
 using utl::GPL;
 
 // TimingBase
-TimingBase::TimingBase() = default;
+TimingBase::TimingBase()
+{
+  loadEnvOverrides();
+}
 
 TimingBase::TimingBase(std::shared_ptr<NesterovBaseCommon> nbc,
                        rsz::Resizer* rs,
@@ -32,12 +37,55 @@ TimingBase::TimingBase(std::shared_ptr<NesterovBaseCommon> nbc,
   rs_ = rs;
   nbc_ = std::move(nbc);
   log_ = log;
+  loadEnvOverrides();
 }
 
 void TimingBase::initTimingOverflowChk()
 {
   timingOverflowChk_.clear();
   timingOverflowChk_.resize(timingNetWeightOverflow_.size(), false);
+}
+
+namespace {
+std::optional<float> getEnvFloat(const char* name, utl::Logger* log)
+{
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return std::nullopt;
+  }
+
+  char* end = nullptr;
+  const float value = std::strtof(raw, &end);
+  if (end == raw || (end != nullptr && *end != '\0')) {
+    if (log != nullptr) {
+      log->warn(GPL, 124, "Ignoring {}='{}' (not a valid float).", name, raw);
+    }
+    return std::nullopt;
+  }
+  return value;
+}
+}  // namespace
+
+void TimingBase::loadEnvOverrides()
+{
+  if (auto env_max = getEnvFloat("GPL_WEIGHT_MAX", log_)) {
+    if (*env_max > 0.0F) {
+      net_weight_max_ = *env_max;
+    } else if (log_ != nullptr) {
+      log_->warn(GPL,
+                 125,
+                 "Ignoring GPL_WEIGHT_MAX={} (must be > 0).",
+                 *env_max);
+    }
+  }
+
+  if (auto env_exp = getEnvFloat("GPL_WEIGHT_EXP", log_)) {
+    if (*env_exp > 0.0F) {
+      net_weight_exponent_ = *env_exp;
+    } else if (log_ != nullptr) {
+      log_->warn(GPL, 126, "Ignoring GPL_WEIGHT_EXP={} (must be > 0).", *env_exp);
+    }
+  }
 }
 
 bool TimingBase::isTimingNetWeightOverflow(float overflow)
@@ -166,9 +214,12 @@ bool TimingBase::executeTimingDriven(bool run_journal_restore)
         } else {
           // weight(min_slack) = net_weight_max_
           // weight(max_slack) = 1
-          const float weight = 1
-                               + (net_weight_max_ - 1) * (slack_max - net_slack)
-                                     / (slack_max - slack_min);
+          const float normalized_slack
+              = (slack_max - net_slack) / (slack_max - slack_min);
+          const float scaled_slack
+              = std::pow(normalized_slack, net_weight_exponent_);
+          const float weight
+              = 1 + (net_weight_max_ - 1) * scaled_slack;
           gNet->setTimingWeight(weight);
         }
         weighted_net_count++;

@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
+#include <mutex>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -58,6 +60,8 @@ using std::string;
 using std::vector;
 using utl::RSZ;
 
+int RepairSetup::decreasing_slack_max_passes_ = 50;
+
 using sta::Edge;
 using sta::fuzzyEqual;
 using sta::fuzzyGreater;
@@ -74,6 +78,35 @@ using sta::VertexOutEdgeIterator;
 
 RepairSetup::RepairSetup(Resizer* resizer) : resizer_(resizer)
 {
+  static std::once_flag env_once;
+  std::call_once(env_once, [&]() {
+    const char* raw = std::getenv("RSZ_DECR_MAX_PASSES");
+    if (raw == nullptr || *raw == '\0') {
+      return;
+    }
+
+    char* end = nullptr;
+    const long parsed = std::strtol(raw, &end, 10);
+    Logger* logger = resizer_ != nullptr ? resizer_->logger() : nullptr;
+    if (end == raw || (end != nullptr && *end != '\0')) {
+      if (logger != nullptr) {
+        logger->warn(RSZ,
+                     285,
+                     "Ignoring RSZ_DECR_MAX_PASSES='{}' (not a valid integer).",
+                     raw);
+      }
+      return;
+    }
+
+    if (parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
+      decreasing_slack_max_passes_ = static_cast<int>(parsed);
+    } else if (logger != nullptr) {
+      logger->warn(RSZ,
+                   286,
+                   "Ignoring RSZ_DECR_MAX_PASSES='{}' (must be > 0).",
+                   raw);
+    }
+  });
 }
 
 void RepairSetup::init()
