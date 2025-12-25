@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <mutex>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -20,6 +23,7 @@
 #include "Rebuffer.hh"
 #include "SizeDownMove.hh"
 #include "db_sta/dbSta.hh"
+#include "est/EstimateParasitics.h"
 #include "sta/Delay.hh"
 #include "sta/NetworkClass.hh"
 #include "sta/SearchClass.hh"
@@ -34,7 +38,6 @@
 #include "sta/DcalcAnalysisPt.hh"
 #include "sta/Fuzzy.hh"
 #include "sta/Graph.hh"
-#include "sta/GraphDelayCalc.hh"
 #include "sta/InputDrive.hh"
 #include "sta/Liberty.hh"
 #include "sta/Parasitics.hh"
@@ -58,12 +61,13 @@ using std::string;
 using std::vector;
 using utl::RSZ;
 
+int RepairSetup::decreasing_slack_max_passes_ = 50;
+
 using sta::Edge;
 using sta::fuzzyEqual;
 using sta::fuzzyGreater;
 using sta::fuzzyGreaterEqual;
 using sta::fuzzyLess;
-using sta::GraphDelayCalc;
 using sta::InstancePinIterator;
 using sta::NetConnectedPinIterator;
 using sta::PathEndSeq;
@@ -74,6 +78,33 @@ using sta::VertexOutEdgeIterator;
 
 RepairSetup::RepairSetup(Resizer* resizer) : resizer_(resizer)
 {
+  static std::once_flag env_once;
+  std::call_once(env_once, [&]() {
+    const char* raw = std::getenv("RSZ_DECR_MAX_PASSES");
+    if (raw == nullptr || *raw == '\0') {
+      return;
+    }
+
+    char* end = nullptr;
+    const int64_t parsed = std::strtoll(raw, &end, 10);
+    Logger* logger = resizer_ != nullptr ? resizer_->logger() : nullptr;
+    if (end == raw || (end != nullptr && *end != '\0')) {
+      if (logger != nullptr) {
+        logger->warn(RSZ,
+                     285,
+                     "Ignoring RSZ_DECR_MAX_PASSES='{}' (not a valid integer).",
+                     raw);
+      }
+      return;
+    }
+
+    if (parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
+      decreasing_slack_max_passes_ = static_cast<int>(parsed);
+    } else if (logger != nullptr) {
+      logger->warn(
+          RSZ, 286, "Ignoring RSZ_DECR_MAX_PASSES='{}' (must be > 0).", raw);
+    }
+  });
 }
 
 void RepairSetup::init()
@@ -305,6 +336,7 @@ bool RepairSetup::repairSetup(const float setup_slack_margin,
     int pass = 1;
     int decreasing_slack_passes = 0;
     resizer_->journalBegin();
+    float prev_checkpoint_tns = sta_->totalNegativeSlack(max_);
     while (pass <= max_passes) {
       opto_iteration++;
       if (verbose || opto_iteration == 1) {
@@ -392,8 +424,12 @@ bool RepairSetup::repairSetup(const float setup_slack_margin,
       sta_->findRequireds();
       end_slack = sta_->vertexSlack(end, max_);
       sta_->worstSlack(max_, worst_slack, worst_vertex);
+      const float curr_tns = sta_->totalNegativeSlack(max_);
+      const bool wns_not_worse
+          = fuzzyGreaterEqual(worst_slack, prev_worst_slack);
       const bool better
           = (fuzzyGreater(worst_slack, prev_worst_slack)
+             || (wns_not_worse && curr_tns > prev_checkpoint_tns)
              || (end_index != 1 && fuzzyEqual(worst_slack, prev_worst_slack)
                  && fuzzyGreater(end_slack, prev_end_slack)));
       debugPrint(logger_,
@@ -409,6 +445,7 @@ bool RepairSetup::repairSetup(const float setup_slack_margin,
         if (end_slack > setup_slack_margin) {
           --num_viols;
         }
+        prev_checkpoint_tns = curr_tns;
         prev_end_slack = end_slack;
         prev_worst_slack = worst_slack;
         decreasing_slack_passes = 0;

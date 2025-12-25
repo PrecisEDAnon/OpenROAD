@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -21,13 +23,29 @@
 #include "placerBase.h"
 #include "routeBase.h"
 #include "rsz/Resizer.hh"
-#include "sta/StaMain.hh"
 #include "timingBase.h"
 #include "utl/Logger.h"
 
 namespace gpl {
 
 using utl::GPL;
+
+namespace {
+std::optional<float> getEnvFloat(const char* name)
+{
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return std::nullopt;
+  }
+
+  char* end = nullptr;
+  const float value = std::strtof(raw, &end);
+  if (end == raw || (end != nullptr && *end != '\0')) {
+    return std::nullopt;
+  }
+  return value;
+}
+}  // namespace
 
 Replace::Replace(odb::dbDatabase* odb,
                  sta::dbSta* sta,
@@ -100,6 +118,7 @@ void Replace::reset()
   timingNetWeightOverflows_.clear();
   timingNetWeightOverflows_.shrink_to_fit();
   timingNetWeightMax_ = 5;
+  timingNetWeightMax_user_set_ = false;
 }
 
 void Replace::addPlacementCluster(const Cluster& cluster)
@@ -325,6 +344,16 @@ bool Replace::initNesterovPlace(int threads)
   if (!tb_) {
     tb_ = std::make_shared<TimingBase>(nbc_, rs_, log_);
     tb_->setTimingNetWeightOverflows(timingNetWeightOverflows_);
+    if (!timingNetWeightMax_user_set_) {
+      if (auto env_max = getEnvFloat("GPL_WEIGHT_MAX")) {
+        if (*env_max > 0.0f) {
+          timingNetWeightMax_ = *env_max;
+        } else {
+          log_->warn(
+              GPL, 159, "Ignoring GPL_WEIGHT_MAX={} (must be > 0).", *env_max);
+        }
+      }
+    }
     tb_->setTimingNetWeightMax(timingNetWeightMax_);
   }
 
@@ -614,6 +643,7 @@ void Replace::addTimingNetWeightOverflow(int overflow)
 void Replace::setTimingNetWeightMax(float max)
 {
   timingNetWeightMax_ = max;
+  timingNetWeightMax_user_set_ = true;
 }
 
 }  // namespace gpl
