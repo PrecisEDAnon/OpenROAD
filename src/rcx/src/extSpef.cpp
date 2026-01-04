@@ -1316,11 +1316,45 @@ const char* extSpef::addEscChar(const char* iname, const bool esc_bus_brkts)
 {
   uint ii = 0;
   uint jj = 0;
+  bool escape_bus_brackets = esc_bus_brkts;
+
+  // SPEF readers may reject non-integer bus indices (eg, [-1]). When bus
+  // brackets are not requested to be escaped, only treat a trailing "[<N>]"
+  // suffix as a bus index if <N> is an unsigned integer. Otherwise, escape the
+  // brackets so the name is treated as a plain identifier.
+  if (!esc_bus_brkts) {
+    const char* open = strrchr(iname, '[');
+    const char* close = strrchr(iname, ']');
+    if (open != nullptr && close != nullptr && close > open && close[1] == '\0') {
+      bool unsigned_int = (open + 1) != close;
+      for (const char* p = open + 1; p < close && unsigned_int; p++) {
+        unsigned_int
+            = std::isdigit(static_cast<unsigned char>(*p)) != 0;
+      }
+      if (!unsigned_int) {
+        escape_bus_brackets = true;
+      }
+    }
+  }
+
+  bool inside_bus_brackets = false;
   while (iname[ii] != '\0') {
     char ch = iname[ii];
-    if (!std::isalnum(ch) && ch != '_' && ch != '\\' && ch != '/'
+
+    // When bus brackets are not escaped, treat the entire bracket contents as
+    // part of the bus index and do not escape characters within it.
+    if (!escape_bus_brackets) {
+      if (ch == '[') {
+        inside_bus_brackets = true;
+      } else if (ch == ']') {
+        inside_bus_brackets = false;
+      }
+    }
+
+    if (!inside_bus_brackets && !std::isalnum(ch) && ch != '_' && ch != '\\'
+        && ch != '/'
         &&  // hier delimiters are already escaped if needed
-        (esc_bus_brkts || (ch != '[' && ch != ']'))
+        (escape_bus_brackets || (ch != '[' && ch != ']'))
         // Check if there is an escape char before
         // the non-alphanumeric character
         && (ii == 0 || iname[ii - 1] != '\\')) {
