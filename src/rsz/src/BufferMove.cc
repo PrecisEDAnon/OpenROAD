@@ -57,7 +57,7 @@ bool BufferMove::doMove(const Path* drvr_path,
     return false;
   }
   // Rebuffer blows up on large fanout nets.
-  if (fanout >= rebuffer_max_fanout_) {
+  if (fanout >= resizer_->rebufferCloneGateFanout()) {
     return false;
   }
   if (!resizer_->okToBufferNet(drvr_pin)) {

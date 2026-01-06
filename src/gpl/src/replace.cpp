@@ -100,6 +100,62 @@ void Replace::reset()
   timingNetWeightOverflows_.clear();
   timingNetWeightOverflows_.shrink_to_fit();
   timingNetWeightMax_ = 5;
+
+  // Dynamic timing weights
+  td_enable_dynamic_weights_ = false;
+  td_weight_min_ = 1.0f;
+  td_weight_max_ = 5.0f;
+  td_congestion_alpha_ = 0.5f;
+  td_ramp_iterations_ = 200;
+  td_update_period_ = 10;
+  td_initial_nets_percent_ = 5.0f;
+  td_final_nets_percent_ = 20.0f;
+  td_slack_norm_ = 0.1;
+  td_length_norm_ = 100.0;
+  td_overflow_limit_ = 0.1f;
+
+  // Slack-severity shaping
+  td_severity_slack_norm_ = 0.1f;
+  td_severity_ratio_cap_ = 5.0f;
+  td_severity_weight_scale_ = 1.0f;
+  td_severity_weight_limit_ = 10.0f;
+  td_severity_coverage_scale_ = 1.0f;
+  td_severity_coverage_limit_ = 2.0f;
+
+  // Endpoint-driven selection
+  td_top_endpoints_ = 0;
+  td_slack_thresh_ = 0.0f;
+
+  // Resizer interaction / guard knobs
+  td_noncrit_slack_budget_ns_ = 0.05f;
+  td_setup_guard_cap_ns_ = 0.03f;
+  td_guard_window_ns_ = 0.0f;
+  td_post_cts_hold_floor_ns_ = 0.0f;
+  td_rebuffer_clone_gate_fanout_ = 20;
+  td_clone_group_fanout_ = 20;
+  td_gr_pick_radius_ = 0;
+
+  // Congestion gating & spatial options
+  td_congestion_gate_ = 0.9f;
+  td_hot_bin_fraction_ = 0.05f;
+  td_hot_bin_threshold_ = 0.1f;
+
+  cws_enable_ = false;
+  cws_charge_k_ = 1.0f;
+  cws_width_bins_ = 2;
+  cws_top_endpoints_ = 0;
+  cws_min_path_length_ = 5;
+
+  aas_enable_ = false;
+  aas_k_ = 1.0f;
+  aas_top_paths_ = 0;
+  aas_overflow_gate_ = 0.8f;
+  aas_min_path_length_ = 5;
+
+  // ECP parameters
+  ecp_scale_ = 1.0f;
+  ecp_weight_max_ = 2.0f;
+  ecp_top_endpoint_frac_ = 0.05f;
 }
 
 void Replace::addPlacementCluster(const Cluster& cluster)
@@ -349,6 +405,62 @@ bool Replace::initNesterovPlace(int threads)
     npVars.debug_generate_images = gui_debug_generate_images_;
     npVars.debug_images_path = gui_debug_images_path_;
     npVars.disableRevertIfDiverge = disableRevertIfDiverge_;
+
+    // Dynamic timing weights
+    npVars.td_enable_dynamic_weights = td_enable_dynamic_weights_;
+    npVars.td_weight_min = td_weight_min_;
+    npVars.td_weight_max = td_weight_max_;
+    npVars.td_congestion_alpha = td_congestion_alpha_;
+    npVars.td_ramp_iterations = td_ramp_iterations_;
+    npVars.td_update_period = td_update_period_;
+    npVars.td_initial_nets_percent = td_initial_nets_percent_;
+    npVars.td_final_nets_percent = td_final_nets_percent_;
+    npVars.td_slack_norm = td_slack_norm_;
+    npVars.td_length_norm = td_length_norm_;
+    npVars.td_overflow_limit = td_overflow_limit_;
+
+    // Slack-severity shaping
+    npVars.td_severity_slack_norm = td_severity_slack_norm_;
+    npVars.td_severity_ratio_cap = td_severity_ratio_cap_;
+    npVars.td_severity_weight_scale = td_severity_weight_scale_;
+    npVars.td_severity_weight_limit = td_severity_weight_limit_;
+    npVars.td_severity_coverage_scale = td_severity_coverage_scale_;
+    npVars.td_severity_coverage_limit = td_severity_coverage_limit_;
+
+    // Endpoint-driven selection
+    npVars.td_top_endpoints = td_top_endpoints_;
+    npVars.td_slack_thresh = td_slack_thresh_;
+
+    // Resizer interaction / guard knobs
+    npVars.td_noncrit_slack_budget_ns = td_noncrit_slack_budget_ns_;
+    npVars.td_setup_guard_cap_ns = td_setup_guard_cap_ns_;
+    npVars.td_guard_window_ns = td_guard_window_ns_;
+    npVars.td_post_cts_hold_floor_ns = td_post_cts_hold_floor_ns_;
+    npVars.td_rebuffer_clone_gate_fanout = td_rebuffer_clone_gate_fanout_;
+    npVars.td_clone_group_fanout = td_clone_group_fanout_;
+    npVars.td_gr_pick_radius = td_gr_pick_radius_;
+
+    // Congestion gating & spatial options
+    npVars.td_congestion_gate = td_congestion_gate_;
+    npVars.td_hot_bin_fraction = td_hot_bin_fraction_;
+    npVars.td_hot_bin_threshold = td_hot_bin_threshold_;
+
+    npVars.cws_enable = cws_enable_;
+    npVars.cws_charge_k = cws_charge_k_;
+    npVars.cws_width_bins = cws_width_bins_;
+    npVars.cws_top_endpoints = cws_top_endpoints_;
+    npVars.cws_min_path_length = cws_min_path_length_;
+
+    npVars.aas_enable = aas_enable_;
+    npVars.aas_k = aas_k_;
+    npVars.aas_top_paths = aas_top_paths_;
+    npVars.aas_overflow_gate = aas_overflow_gate_;
+    npVars.aas_min_path_length = aas_min_path_length_;
+
+    // ECP parameters
+    npVars.ecp_scale = ecp_scale_;
+    npVars.ecp_weight_max = ecp_weight_max_;
+    npVars.ecp_top_endpoint_frac = ecp_top_endpoint_frac_;
 
     for (const auto& nb : nbVec_) {
       nb->setNpVars(&npVars);
@@ -614,6 +726,216 @@ void Replace::addTimingNetWeightOverflow(int overflow)
 void Replace::setTimingNetWeightMax(float max)
 {
   timingNetWeightMax_ = max;
+}
+
+void Replace::setTdEnableDynamicWeights(bool enable)
+{
+  td_enable_dynamic_weights_ = enable;
+}
+
+void Replace::setTdWeightMin(float min)
+{
+  td_weight_min_ = min;
+}
+
+void Replace::setTdWeightMax(float max)
+{
+  td_weight_max_ = max;
+}
+
+void Replace::setTdCongestionAlpha(float alpha)
+{
+  td_congestion_alpha_ = alpha;
+}
+
+void Replace::setTdRampIterations(int iterations)
+{
+  td_ramp_iterations_ = iterations;
+}
+
+void Replace::setTdUpdatePeriod(int period)
+{
+  td_update_period_ = period;
+}
+
+void Replace::setTdInitialNetsPercent(float percent)
+{
+  td_initial_nets_percent_ = percent;
+}
+
+void Replace::setTdFinalNetsPercent(float percent)
+{
+  td_final_nets_percent_ = percent;
+}
+
+void Replace::setTdSlackNorm(double norm)
+{
+  td_slack_norm_ = norm;
+}
+
+void Replace::setTdLengthNorm(double norm)
+{
+  td_length_norm_ = norm;
+}
+
+void Replace::setTdOverflowLimit(float limit)
+{
+  td_overflow_limit_ = limit;
+}
+
+void Replace::setTdSeveritySlackNorm(float norm)
+{
+  td_severity_slack_norm_ = norm;
+}
+
+void Replace::setTdSeverityRatioCap(float cap)
+{
+  td_severity_ratio_cap_ = cap;
+}
+
+void Replace::setTdSeverityWeightScale(float scale)
+{
+  td_severity_weight_scale_ = scale;
+}
+
+void Replace::setTdSeverityWeightLimit(float limit)
+{
+  td_severity_weight_limit_ = limit;
+}
+
+void Replace::setTdSeverityCoverageScale(float scale)
+{
+  td_severity_coverage_scale_ = scale;
+}
+
+void Replace::setTdSeverityCoverageLimit(float limit)
+{
+  td_severity_coverage_limit_ = limit;
+}
+
+void Replace::setTdTopEndpoints(int count)
+{
+  td_top_endpoints_ = count;
+}
+
+void Replace::setTdSlackThresh(float thresh)
+{
+  td_slack_thresh_ = thresh;
+}
+
+void Replace::setTdNoncritSlackBudgetNs(float budget)
+{
+  td_noncrit_slack_budget_ns_ = budget;
+}
+
+void Replace::setTdSetupGuardCapNs(float cap)
+{
+  td_setup_guard_cap_ns_ = cap;
+}
+
+void Replace::setTdGuardWindowNs(float window)
+{
+  td_guard_window_ns_ = window;
+}
+
+void Replace::setTdPostCtsHoldFloorNs(float floor)
+{
+  td_post_cts_hold_floor_ns_ = floor;
+}
+
+void Replace::setTdRebufferCloneGateFanout(int fanout)
+{
+  td_rebuffer_clone_gate_fanout_ = fanout;
+}
+
+void Replace::setTdCloneGroupFanout(int fanout)
+{
+  td_clone_group_fanout_ = fanout;
+}
+
+void Replace::setTdGrPickRadius(int radius)
+{
+  td_gr_pick_radius_ = radius;
+}
+
+void Replace::setTdCongestionGate(float gate)
+{
+  td_congestion_gate_ = gate;
+}
+
+void Replace::setTdHotBinFraction(float fraction)
+{
+  td_hot_bin_fraction_ = fraction;
+}
+
+void Replace::setTdHotBinThreshold(float threshold)
+{
+  td_hot_bin_threshold_ = threshold;
+}
+
+void Replace::setCwsEnable(bool enable)
+{
+  cws_enable_ = enable;
+}
+
+void Replace::setCwsChargeK(float k)
+{
+  cws_charge_k_ = k;
+}
+
+void Replace::setCwsWidthBins(int bins)
+{
+  cws_width_bins_ = bins;
+}
+
+void Replace::setCwsTopEndpoints(int count)
+{
+  cws_top_endpoints_ = count;
+}
+
+void Replace::setCwsMinPathLength(int length)
+{
+  cws_min_path_length_ = length;
+}
+
+void Replace::setAasEnable(bool enable)
+{
+  aas_enable_ = enable;
+}
+
+void Replace::setAasK(float k)
+{
+  aas_k_ = k;
+}
+
+void Replace::setAasTopPaths(int count)
+{
+  aas_top_paths_ = count;
+}
+
+void Replace::setAasOverflowGate(float gate)
+{
+  aas_overflow_gate_ = gate;
+}
+
+void Replace::setAasMinPathLength(int length)
+{
+  aas_min_path_length_ = length;
+}
+
+void Replace::setEcpScale(float scale)
+{
+  ecp_scale_ = scale;
+}
+
+void Replace::setEcpWeightMax(float max)
+{
+  ecp_weight_max_ = max;
+}
+
+void Replace::setEcpTopEndpointFrac(float frac)
+{
+  ecp_top_endpoint_frac_ = frac;
 }
 
 }  // namespace gpl

@@ -780,6 +780,62 @@ class NesterovPlaceVars
   bool routability_driven_mode = true;
   bool disableRevertIfDiverge = false;
 
+  // Dynamic timing weights
+  bool td_enable_dynamic_weights = false;
+  float td_weight_min = 1.0f;
+  float td_weight_max = 5.0f;
+  float td_congestion_alpha = 0.5f;
+  int td_ramp_iterations = 200;
+  int td_update_period = 10;
+  float td_initial_nets_percent = 5.0f;
+  float td_final_nets_percent = 20.0f;
+  double td_slack_norm = 5e-11;
+  double td_length_norm = 100.0;
+  float td_overflow_limit = 0.1f;
+
+  // Slack-severity shaping
+  float td_severity_slack_norm = 2e-10f;
+  float td_severity_ratio_cap = 5.0f;
+  float td_severity_weight_scale = 1.0f;
+  float td_severity_weight_limit = 10.0f;
+  float td_severity_coverage_scale = 1.0f;
+  float td_severity_coverage_limit = 2.0f;
+
+  // Endpoint-driven selection
+  int td_top_endpoints = 0;
+  float td_slack_thresh = 0.0f;
+
+  // Resizer interaction / guard knobs
+  float td_noncrit_slack_budget_ns = 5e-11f;
+  float td_setup_guard_cap_ns = 3e-11f;
+  float td_guard_window_ns = 0.0f;
+  float td_post_cts_hold_floor_ns = 0.0f;
+  int td_rebuffer_clone_gate_fanout = 20;
+  int td_clone_group_fanout = 20;
+  int td_gr_pick_radius = 0;
+
+  // Congestion gating & spatial options
+  float td_congestion_gate = 0.9f;
+  float td_hot_bin_fraction = 0.05f;
+  float td_hot_bin_threshold = 0.1f;
+
+  bool cws_enable = false;
+  float cws_charge_k = 1.0f;
+  int cws_width_bins = 2;
+  int cws_top_endpoints = 0;
+  int cws_min_path_length = 5;
+
+  bool aas_enable = false;
+  float aas_k = 1.0f;
+  int aas_top_paths = 0;
+  float aas_overflow_gate = 0.8f;
+  int aas_min_path_length = 5;
+
+  // ECP parameters
+  float ecp_scale = 1.0f;
+  float ecp_weight_max = 2.0f;
+  float ecp_top_endpoint_frac = 0.05f;
+
   bool debug = false;
   int debug_pause_iterations = 10;
   int debug_update_iterations = 10;
@@ -1133,6 +1189,15 @@ class NesterovBase
 
   std::shared_ptr<PlacerBase> getPb() const { return pb_; }
 
+  void setCorridorMask(const std::vector<float>& mask);
+  void clearCorridorMask();
+
+  void setPathSpringForces(const std::vector<FloatPoint>& forces);
+  void clearPathSpringForces();
+
+  const std::vector<float>& getCorridorMask() const { return corridor_mask_; }
+  const std::vector<FloatPoint>& getPathSpringForces() const { return path_spring_forces_; }
+
  private:
   NesterovBaseVars nbVars_;
   std::shared_ptr<PlacerBase> pb_;
@@ -1141,6 +1206,9 @@ class NesterovBase
 
   BinGrid bg_;
   std::unique_ptr<FFT> fft_;
+
+  std::vector<float> corridor_mask_;
+  std::vector<FloatPoint> path_spring_forces_;
 
   int fillerDx_ = 0;
   int fillerDy_ = 0;

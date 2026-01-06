@@ -735,6 +735,7 @@ PlacerBaseCommon::~PlacerBaseCommon()
 
 void PlacerBaseCommon::init()
 {
+  log_->info(GPL, 1234, "PlacerBaseCommon::init skipIoMode: {}", pbVars_.skipIoMode);
   log_->info(GPL, 2, "DBU: {}", db_->getTech()->getDbUnitsPerMicron());
 
   dbBlock* block = db_->getChip()->getBlock();

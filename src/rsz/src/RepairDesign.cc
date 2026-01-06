@@ -1458,6 +1458,11 @@ void RepairDesign::repairNetWire(
       double d = (length == 0) ? 0.0 : buf_dist / length;
       int buf_x = to_x + d * dx;
       int buf_y = to_y + d * dy;
+      if (auto route_point = resizer_->snapToRoutePoint(
+              drvr_pin_, Point(buf_x, buf_y))) {
+        buf_x = route_point->getX();
+        buf_y = route_point->getY();
+      }
       float repeater_cap, repeater_fanout;
       if (!makeRepeater("wire",
                         Point(buf_x, buf_y),

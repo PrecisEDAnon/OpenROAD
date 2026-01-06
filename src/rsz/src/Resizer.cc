@@ -48,6 +48,7 @@
 #include "odb/dbTypes.h"
 #include "sta/ArcDelayCalc.hh"
 #include "sta/Bfs.hh"
+#include "sta/Clock.hh"
 #include "sta/Corner.hh"
 #include "sta/Delay.hh"
 #include "sta/FuncExpr.hh"
@@ -137,6 +138,81 @@ using sta::Sdc;
 using sta::SearchPredNonReg2;
 using sta::VertexIterator;
 using sta::VertexOutEdgeIterator;
+using sta::Vertex;
+using sta::ClockSet;
+
+namespace {
+
+constexpr int kMaxPathTraceSteps = 2000;
+
+std::vector<Vertex*> traceWorstPath(sta::dbSta* sta,
+                                    sta::Graph* graph,
+                                    const sta::Network* network,
+                                    Vertex* end)
+{
+  std::vector<Vertex*> path;
+  if (graph == nullptr || end == nullptr) {
+    return path;
+  }
+
+  Vertex* current = end;
+  path.push_back(current);
+
+  int steps = 0;
+  while (current != nullptr && steps++ < kMaxPathTraceSteps) {
+    sta::VertexInEdgeIterator edge_iter(current, graph);
+    Vertex* best_prev = nullptr;
+    float best_slack = std::numeric_limits<float>::infinity();
+
+    while (edge_iter.hasNext()) {
+      sta::Edge* edge = edge_iter.next();
+      Vertex* prev = edge->from(graph);
+      if (prev == nullptr) {
+        continue;
+      }
+
+      float slack = sta->vertexSlack(prev, sta::MinMax::max());
+      if (std::isinf(slack)) {
+        continue;
+      }
+
+      if (slack < best_slack) {
+        best_slack = slack;
+        best_prev = prev;
+      }
+    }
+
+    if (best_prev == nullptr || best_prev == current) {
+      break;
+    }
+
+    current = best_prev;
+    path.push_back(current);
+    if (current->isDriver(network)) {
+      break;
+    }
+  }
+
+  std::reverse(path.begin(), path.end());
+  return path;
+}
+
+sta::Clock* pickClockForPin(sta::Sdc* sdc, const sta::Pin* pin)
+{
+  if (pin == nullptr) {
+    return nullptr;
+  }
+  ClockSet* clocks = sdc->findClocks(pin);
+  if (clocks && !clocks->empty()) {
+    ClockSet::Iterator iter(clocks);
+    if (iter.hasNext()) {
+      return iter.next();
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
 
 using sta::BufferUse;
 using sta::CLOCK;
@@ -2652,37 +2728,45 @@ void Resizer::resizeSlackPreamble()
 // violations. Find the slacks, and then undo all changes to the netlist.
 void Resizer::findResizeSlacks(bool run_journal_restore)
 {
+  findResizeSlacks(run_journal_restore, /*repair_design=*/true);
+}
+
+void Resizer::findResizeSlacks(bool run_journal_restore, bool repair_design)
+{
   initBlock();
 
   est::IncrementalParasiticsGuard guard(estimate_parasitics_);
-  if (run_journal_restore) {
+  const bool journal = run_journal_restore && repair_design;
+  if (journal) {
     journalBegin();
   }
   ensureLevelDrvrVertices();
   estimate_parasitics_->estimateWireParasitics();
-  int repaired_net_count, slew_violations, cap_violations;
-  int fanout_violations, length_violations;
-  repair_design_->repairDesign(max_wire_length_,
-                               0.0,
-                               0.0,
-                               0.0,
-                               false,
-                               repaired_net_count,
-                               slew_violations,
-                               cap_violations,
-                               fanout_violations,
-                               length_violations);
-  repair_design_->reportViolationCounters(false,
-                                          slew_violations,
-                                          cap_violations,
-                                          fanout_violations,
-                                          length_violations,
-                                          repaired_net_count);
-  fullyRebuffer(nullptr);
-  ensureLevelDrvrVertices();
+  if (repair_design) {
+    int repaired_net_count, slew_violations, cap_violations;
+    int fanout_violations, length_violations;
+    repair_design_->repairDesign(max_wire_length_,
+                                 0.0,
+                                 0.0,
+                                 0.0,
+                                 false,
+                                 repaired_net_count,
+                                 slew_violations,
+                                 cap_violations,
+                                 fanout_violations,
+                                 length_violations);
+    repair_design_->reportViolationCounters(false,
+                                            slew_violations,
+                                            cap_violations,
+                                            fanout_violations,
+                                            length_violations,
+                                            repaired_net_count);
+    fullyRebuffer(nullptr);
+    ensureLevelDrvrVertices();
+  }
 
   findResizeSlacks1();
-  if (run_journal_restore) {
+  if (journal) {
     db_cbk_->addOwner(block_);
     journalRestore();
     db_cbk_->removeOwner();
@@ -4404,7 +4488,8 @@ bool Resizer::repairSetup(double setup_margin,
              == est::ParasiticsSrc::detailed_routing) {
     opendp_->initMacrosAndGrid();
   }
-  return repair_setup_->repairSetup(setup_margin,
+  const double guard_margin = std::max(setup_margin, setup_slack_guard_);
+  return repair_setup_->repairSetup(guard_margin,
                                     repair_tns_end_percent,
                                     max_passes,
                                     max_iterations,
@@ -5226,6 +5311,392 @@ bool Resizer::checkAndMarkVTSwappable(
   }
 
   return true;
+}
+
+double Resizer::setupSlackGuard() const
+{
+  return setup_slack_guard_;
+}
+
+void Resizer::setSetupSlackGuard(double guard)
+{
+  setup_slack_guard_ = guard;
+}
+
+double Resizer::nonCriticalSlackBudgetNs() const
+{
+  return non_critical_slack_budget_ns_;
+}
+
+void Resizer::setNonCriticalSlackBudget(double budget)
+{
+  non_critical_slack_budget_ns_ = budget;
+}
+
+double Resizer::setupGuardCapNs() const
+{
+  return setup_guard_cap_ns_;
+}
+
+void Resizer::setSetupGuardCapNs(double cap)
+{
+  setup_guard_cap_ns_ = cap;
+}
+
+double Resizer::setupGuardWindowNs() const
+{
+  return setup_guard_window_ns_;
+}
+
+void Resizer::setSetupGuardWindowNs(double window)
+{
+  setup_guard_window_ns_ = window;
+}
+
+double Resizer::postCtsHoldFloorNs() const
+{
+  return post_cts_hold_floor_ns_;
+}
+
+void Resizer::setPostCtsHoldFloorNs(double floor)
+{
+  post_cts_hold_floor_ns_ = floor;
+}
+
+int Resizer::rebufferCloneGateFanout() const
+{
+  return rebuffer_clone_gate_fanout_;
+}
+
+void Resizer::setRebufferCloneGateFanout(int fanout)
+{
+  rebuffer_clone_gate_fanout_ = fanout;
+}
+
+int Resizer::cloneGroupFanout() const
+{
+  return clone_group_fanout_;
+}
+
+void Resizer::setCloneGroupFanout(int fanout)
+{
+  clone_group_fanout_ = fanout;
+}
+
+int Resizer::grPickRadiusTiles() const
+{
+  return gr_pick_radius_tiles_;
+}
+
+void Resizer::setGrPickRadiusTiles(int radius)
+{
+  gr_pick_radius_tiles_ = std::max(0, radius);
+}
+
+std::optional<odb::Point> Resizer::snapToRoutePoint(const Pin* pin,
+                                                    const odb::Point& target) const
+{
+  if (global_router_ == nullptr || gr_pick_radius_tiles_ <= 0 || pin == nullptr) {
+    return std::nullopt;
+  }
+
+  dbNet* db_net = db_network_->flatNet(pin);
+  if (db_net == nullptr) {
+    return std::nullopt;
+  }
+
+  grt::NetRouteMap& routes = global_router_->getRoutes();
+  auto route_it = routes.find(db_net);
+  if (route_it == routes.end()) {
+    return std::nullopt;
+  }
+
+  const int tile_size = global_router_->getTileSize();
+  if (tile_size <= 0) {
+    return std::nullopt;
+  }
+  const int radius_dbu = gr_pick_radius_tiles_ * tile_size;
+  if (radius_dbu <= 0) {
+    return std::nullopt;
+  }
+
+  const int target_x = target.getX();
+  const int target_y = target.getY();
+
+  int best_distance = std::numeric_limits<int>::max();
+  odb::Point best_point;
+
+  const grt::GRoute& route = route_it->second;
+  for (const grt::GSegment& seg : route) {
+    if (seg.isVia()) {
+      continue;
+    }
+
+    const int x1 = seg.init_x;
+    const int y1 = seg.init_y;
+    const int x2 = seg.final_x;
+    const int y2 = seg.final_y;
+
+    int cand_x = target_x;
+    int cand_y = target_y;
+
+    if (x1 == x2) {
+      const int y_min = std::min(y1, y2);
+      const int y_max = std::max(y1, y2);
+      cand_x = x1;
+      cand_y = std::clamp(target_y, y_min, y_max);
+    } else if (y1 == y2) {
+      const int x_min = std::min(x1, x2);
+      const int x_max = std::max(x1, x2);
+      cand_y = y1;
+      cand_x = std::clamp(target_x, x_min, x_max);
+    } else {
+      continue;
+    }
+
+    const int distance
+        = std::abs(cand_x - target_x) + std::abs(cand_y - target_y);
+    if (distance <= radius_dbu && distance < best_distance) {
+      best_distance = distance;
+      best_point.setX(cand_x);
+      best_point.setY(cand_y);
+    }
+  }
+
+  if (best_distance == std::numeric_limits<int>::max()) {
+    return std::nullopt;
+  }
+  return best_point;
+}
+
+VertexSeq Resizer::findWorstSlackVertices(int max_count, Slack slack_threshold)
+{
+  sta_->ensureClkNetwork();
+  sta_->ensureGraph();
+  search_->findArrivals();
+  graph_ = sta_->graph();
+  VertexSeq worst_vertices;
+
+  if (graph_ == nullptr) {
+    return worst_vertices;
+  }
+
+  const bool apply_threshold = std::isfinite(slack_threshold);
+
+  VertexIterator vertex_iter(graph_);
+  while (vertex_iter.hasNext()) {
+    Vertex* vertex = vertex_iter.next();
+    if (vertex == nullptr || vertex->isDriver(network_)) {
+      continue;
+    }
+
+    Slack slack = sta_->vertexSlack(vertex, sta::MinMax::max());
+    if (std::isinf(slack)) {
+      continue;
+    }
+
+    if (!apply_threshold || slack <= slack_threshold) {
+      worst_vertices.push_back(vertex);
+    }
+  }
+
+  if (worst_vertices.empty()) {
+    return worst_vertices;
+  }
+
+  std::sort(worst_vertices.begin(),
+            worst_vertices.end(),
+            [this](Vertex* a, Vertex* b) {
+              return sta_->vertexSlack(a, sta::MinMax::max())
+                     < sta_->vertexSlack(b, sta::MinMax::max());
+            });
+
+  if (max_count > 0 && worst_vertices.size() > static_cast<size_t>(max_count)) {
+    worst_vertices.resize(max_count);
+  }
+  
+  return worst_vertices;
+}
+
+std::vector<std::vector<Vertex*>> Resizer::findWorstPaths(int max_count, Slack slack_threshold)
+{
+  sta_->ensureClkNetwork();
+  search_->findArrivals();
+  graph_ = sta_->graph();
+  std::vector<std::vector<Vertex*>> paths;
+
+  if (graph_ == nullptr) {
+    return paths;
+  }
+
+  VertexSeq endpoints = findWorstSlackVertices(max_count, slack_threshold);
+  if (endpoints.empty()) {
+    return paths;
+  }
+
+  for (Vertex* end : endpoints) {
+    auto path = traceWorstPath(sta_, graph_, network_, end);
+    if (!path.empty()) {
+      paths.push_back(std::move(path));
+    }
+  }
+  return paths;
+}
+
+std::vector<odb::dbNet*> Resizer::criticalPathNets(int top_endpoints, Slack slack_threshold)
+{
+  std::vector<odb::dbNet*> critical_nets;
+  if (top_endpoints <= 0) {
+    return critical_nets;
+  }
+
+  auto paths = findWorstPaths(top_endpoints, slack_threshold);
+  if (paths.empty()) {
+    return critical_nets;
+  }
+
+  std::unordered_set<odb::dbNet*> visited;
+  for (const auto& path : paths) {
+    for (Vertex* vertex : path) {
+      const Pin* pin = vertex ? vertex->pin() : nullptr;
+      if (!pin) {
+        continue;
+      }
+      const Net* sta_net = network_->net(pin);
+      if (!sta_net) {
+        continue;
+      }
+      odb::dbNet* db_net = db_network_->staToDb(sta_net);
+      if (db_net && visited.insert(db_net).second) {
+        critical_nets.push_back(db_net);
+      }
+    }
+  }
+  
+  return critical_nets;
+}
+
+float Resizer::slackMarginFromScale(float scale, sta::Clock* clk)
+{
+  if (clk == nullptr) {
+    return 0.0f;
+  }
+  const float period = clk->period();
+  return (1.0f - scale) * period;
+}
+
+int Resizer::countECP(float scale)
+{
+  sta_->ensureClkNetwork();
+  sta_->ensureGraph();
+  search_->findArrivals();
+  graph_ = sta_->graph();
+  if (graph_ == nullptr) {
+    return 0;
+  }
+
+  int count = 0;
+  VertexIterator vertex_iter(graph_);
+  while (vertex_iter.hasNext()) {
+    Vertex* vertex = vertex_iter.next();
+    if (vertex == nullptr || vertex->isDriver(network_)) {
+      continue;
+    }
+
+    Slack slack = sta_->vertexSlack(vertex, sta::MinMax::max());
+    if (std::isinf(slack)) {
+      continue;
+    }
+
+    Clock* clk = pickClockForPin(sdc_, vertex->pin());
+    if (clk == nullptr) {
+      continue;
+    }
+
+    const float margin = slackMarginFromScale(scale, clk);
+    if (slack - margin < 0.0f) {
+      count++;
+    }
+  }
+  return count;
+}
+
+void Resizer::collectECPNets(float scale,
+                             float top_endpoint_frac,
+                             std::unordered_map<const sta::Net*, float>& net2crit)
+{
+  net2crit.clear();
+  sta_->ensureClkNetwork();
+  sta_->ensureGraph();
+  search_->findArrivals();
+  graph_ = sta_->graph();
+  if (graph_ == nullptr) {
+    return;
+  }
+
+  std::vector<std::pair<Vertex*, float>> critical_endpoints;
+  VertexIterator vertex_iter(graph_);
+  while (vertex_iter.hasNext()) {
+    Vertex* vertex = vertex_iter.next();
+    if (vertex == nullptr || vertex->isDriver(network_)) {
+      continue;
+    }
+
+    Slack slack = sta_->vertexSlack(vertex, sta::MinMax::max());
+    if (std::isinf(slack)) {
+      continue;
+    }
+
+    Clock* clk = pickClockForPin(sdc_, vertex->pin());
+    if (clk == nullptr) {
+      continue;
+    }
+
+    const float scaled_slack = slack - slackMarginFromScale(scale, clk);
+    if (scaled_slack < 0.0f) {
+      critical_endpoints.emplace_back(vertex, scaled_slack);
+    }
+  }
+
+  if (critical_endpoints.empty()) {
+    return;
+  }
+
+  std::sort(critical_endpoints.begin(),
+            critical_endpoints.end(),
+            [](const auto& a, const auto& b) { return a.second < b.second; });
+
+  size_t limit = critical_endpoints.size();
+  if (top_endpoint_frac > 0.0f && top_endpoint_frac < 1.0f) {
+    limit = std::max<size_t>(
+        1, static_cast<size_t>(std::ceil(critical_endpoints.size() * top_endpoint_frac)));
+  }
+
+  for (size_t i = 0; i < limit; ++i) {
+    Vertex* end = critical_endpoints[i].first;
+    const float violation = std::abs(critical_endpoints[i].second);
+    auto path = traceWorstPath(sta_, graph_, network_, end);
+    if (path.empty()) {
+      continue;
+    }
+
+    const float severity = 1.0f + violation / 0.10f;
+    for (Vertex* vertex : path) {
+      const Pin* pin = vertex ? vertex->pin() : nullptr;
+      if (!pin) {
+        continue;
+      }
+      const Net* sta_net = network_->net(pin);
+      if (!sta_net) {
+        continue;
+      }
+
+      auto [it, inserted] = net2crit.emplace(sta_net, severity);
+      if (!inserted && it->second < severity) {
+        it->second = severity;
+      }
+    }
+  }
 }
 
 }  // namespace rsz

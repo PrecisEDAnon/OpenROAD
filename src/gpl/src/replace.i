@@ -299,7 +299,48 @@ set_timing_driven_net_weight_max_cmd(float max)
   return replace->setTimingNetWeightMax(max);
 }
 
-
+void set_td_enable_dynamic_weights_cmd(bool enable) { getReplace()->setTdEnableDynamicWeights(enable); }
+void set_td_weight_min_cmd(float min) { getReplace()->setTdWeightMin(min); }
+void set_td_weight_max_cmd(float max) { getReplace()->setTdWeightMax(max); }
+void set_td_congestion_alpha_cmd(float alpha) { getReplace()->setTdCongestionAlpha(alpha); }
+void set_td_ramp_iterations_cmd(int iter) { getReplace()->setTdRampIterations(iter); }
+void set_td_update_period_cmd(int period) { getReplace()->setTdUpdatePeriod(period); }
+void set_td_initial_nets_percent_cmd(float percent) { getReplace()->setTdInitialNetsPercent(percent); }
+void set_td_final_nets_percent_cmd(float percent) { getReplace()->setTdFinalNetsPercent(percent); }
+void set_td_slack_norm_cmd(double norm) { getReplace()->setTdSlackNorm(norm); }
+void set_td_length_norm_cmd(double norm) { getReplace()->setTdLengthNorm(norm); }
+void set_td_overflow_limit_cmd(float limit) { getReplace()->setTdOverflowLimit(limit); }
+void set_td_severity_slack_norm_cmd(float norm) { getReplace()->setTdSeveritySlackNorm(norm); }
+void set_td_severity_ratio_cap_cmd(float cap) { getReplace()->setTdSeverityRatioCap(cap); }
+void set_td_severity_weight_scale_cmd(float scale) { getReplace()->setTdSeverityWeightScale(scale); }
+void set_td_severity_weight_limit_cmd(float limit) { getReplace()->setTdSeverityWeightLimit(limit); }
+void set_td_severity_coverage_scale_cmd(float scale) { getReplace()->setTdSeverityCoverageScale(scale); }
+void set_td_severity_coverage_limit_cmd(float limit) { getReplace()->setTdSeverityCoverageLimit(limit); }
+void set_td_top_endpoints_cmd(int count) { getReplace()->setTdTopEndpoints(count); }
+void set_td_slack_thresh_cmd(float thresh) { getReplace()->setTdSlackThresh(thresh); }
+void set_td_noncrit_slack_budget_ns_cmd(float budget) { getReplace()->setTdNoncritSlackBudgetNs(budget); }
+void set_td_setup_guard_cap_ns_cmd(float cap) { getReplace()->setTdSetupGuardCapNs(cap); }
+void set_td_guard_window_ns_cmd(float window) { getReplace()->setTdGuardWindowNs(window); }
+void set_td_post_cts_hold_floor_ns_cmd(float floor) { getReplace()->setTdPostCtsHoldFloorNs(floor); }
+void set_td_rebuffer_clone_gate_fanout_cmd(int fanout) { getReplace()->setTdRebufferCloneGateFanout(fanout); }
+void set_td_clone_group_fanout_cmd(int fanout) { getReplace()->setTdCloneGroupFanout(fanout); }
+void set_td_gr_pick_radius_cmd(int radius) { getReplace()->setTdGrPickRadius(radius); }
+void set_td_congestion_gate_cmd(float gate) { getReplace()->setTdCongestionGate(gate); }
+void set_td_hot_bin_fraction_cmd(float frac) { getReplace()->setTdHotBinFraction(frac); }
+void set_td_hot_bin_threshold_cmd(float thresh) { getReplace()->setTdHotBinThreshold(thresh); }
+void set_cws_enable_cmd(bool enable) { getReplace()->setCwsEnable(enable); }
+void set_cws_charge_k_cmd(float k) { getReplace()->setCwsChargeK(k); }
+void set_cws_width_bins_cmd(int bins) { getReplace()->setCwsWidthBins(bins); }
+void set_cws_top_endpoints_cmd(int count) { getReplace()->setCwsTopEndpoints(count); }
+void set_cws_min_path_length_cmd(int len) { getReplace()->setCwsMinPathLength(len); }
+void set_aas_enable_cmd(bool enable) { getReplace()->setAasEnable(enable); }
+void set_aas_k_cmd(float k) { getReplace()->setAasK(k); }
+void set_aas_top_paths_cmd(int count) { getReplace()->setAasTopPaths(count); }
+void set_aas_overflow_gate_cmd(float gate) { getReplace()->setAasOverflowGate(gate); }
+void set_aas_min_path_length_cmd(int len) { getReplace()->setAasMinPathLength(len); }
+void set_ecp_scale_cmd(float scale) { getReplace()->setEcpScale(scale); }
+void set_ecp_weight_max_cmd(float max) { getReplace()->setEcpWeightMax(max); }
+void set_ecp_top_endpoint_frac_cmd(float frac) { getReplace()->setEcpTopEndpointFrac(frac); }
 
 void
 set_debug_cmd(int pause_iterations,

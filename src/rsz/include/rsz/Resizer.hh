@@ -401,11 +401,50 @@ class Resizer : public dbStaState, public dbNetworkObserver
   // resizeSlackPreamble must be called before the first findResizeSlacks.
   void resizeSlackPreamble();
   void findResizeSlacks(bool run_journal_restore);
+  void findResizeSlacks(bool run_journal_restore, bool repair_design);
   // Return nets with worst slack.
   NetSeq resizeWorstSlackNets();
   // Return net slack, if any (indicated by the bool).
   std::optional<Slack> resizeNetSlack(const Net* net);
   std::optional<Slack> resizeNetSlack(const dbNet* db_net);
+
+  // Timing guard parameters
+  double setupSlackGuard() const;
+  void setSetupSlackGuard(double guard);
+
+  double nonCriticalSlackBudgetNs() const;
+  void setNonCriticalSlackBudget(double budget);
+
+  double setupGuardCapNs() const;
+  void setSetupGuardCapNs(double cap);
+
+  double setupGuardWindowNs() const;
+  void setSetupGuardWindowNs(double window);
+
+  double postCtsHoldFloorNs() const;
+  void setPostCtsHoldFloorNs(double floor);
+
+  int rebufferCloneGateFanout() const;
+  void setRebufferCloneGateFanout(int fanout);
+
+  int cloneGroupFanout() const;
+  void setCloneGroupFanout(int fanout);
+
+  int grPickRadiusTiles() const;
+  void setGrPickRadiusTiles(int radius);
+
+  std::optional<odb::Point> snapToRoutePoint(const sta::Pin* pin,
+                                             const odb::Point& target) const;
+
+  // Endpoint extraction
+  VertexSeq findWorstSlackVertices(int max_count, Slack slack_threshold);
+  std::vector<std::vector<sta::Vertex*>> findWorstPaths(int max_count, Slack slack_threshold);
+  std::vector<odb::dbNet*> criticalPathNets(int top_endpoints, Slack slack_threshold);
+
+  // ECP Analysis
+  int countECP(float scale);
+  void collectECPNets(float scale, float top_endpoint_frac, std::unordered_map<const sta::Net*, float>& net2crit);
+  float slackMarginFromScale(float scale, sta::Clock* clk);
 
   ////////////////////////////////////////////////////////////////
   // API for logic resynthesis
@@ -827,6 +866,16 @@ class Resizer : public dbStaState, public dbNetworkObserver
   std::unique_ptr<SizeUpMatchMove> size_up_match_move_;
   int accepted_move_count_ = 0;
   int rejected_move_count_ = 0;
+
+  // Timing guard parameters
+  double setup_slack_guard_ = 0.0;
+  double non_critical_slack_budget_ns_ = 0.05;
+  double setup_guard_cap_ns_ = 0.03;
+  double setup_guard_window_ns_ = 0.0;
+  double post_cts_hold_floor_ns_ = 0.0;
+  int rebuffer_clone_gate_fanout_ = 20;
+  int clone_group_fanout_ = 20;
+  int gr_pick_radius_tiles_ = 0;
 
   friend class BufferedNet;
   friend class GateCloner;

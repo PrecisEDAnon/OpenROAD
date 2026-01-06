@@ -121,6 +121,62 @@ class Replace
   void setTimingNetWeightMax(float max);
   void setKeepResizeBelowOverflow(float overflow);
 
+  // Dynamic timing weights
+  void setTdEnableDynamicWeights(bool enable);
+  void setTdWeightMin(float min);
+  void setTdWeightMax(float max);
+  void setTdCongestionAlpha(float alpha);
+  void setTdRampIterations(int iterations);
+  void setTdUpdatePeriod(int period);
+  void setTdInitialNetsPercent(float percent);
+  void setTdFinalNetsPercent(float percent);
+  void setTdSlackNorm(double norm);
+  void setTdLengthNorm(double norm);
+  void setTdOverflowLimit(float limit);
+
+  // Slack-severity shaping
+  void setTdSeveritySlackNorm(float norm);
+  void setTdSeverityRatioCap(float cap);
+  void setTdSeverityWeightScale(float scale);
+  void setTdSeverityWeightLimit(float limit);
+  void setTdSeverityCoverageScale(float scale);
+  void setTdSeverityCoverageLimit(float limit);
+
+  // Endpoint-driven selection
+  void setTdTopEndpoints(int count);
+  void setTdSlackThresh(float thresh);
+
+  // Resizer interaction / guard knobs
+  void setTdNoncritSlackBudgetNs(float budget);
+  void setTdSetupGuardCapNs(float cap);
+  void setTdGuardWindowNs(float window);
+  void setTdPostCtsHoldFloorNs(float floor);
+  void setTdRebufferCloneGateFanout(int fanout);
+  void setTdCloneGroupFanout(int fanout);
+  void setTdGrPickRadius(int radius);
+
+  // Congestion gating & spatial options
+  void setTdCongestionGate(float gate);
+  void setTdHotBinFraction(float fraction);
+  void setTdHotBinThreshold(float threshold);
+
+  void setCwsEnable(bool enable);
+  void setCwsChargeK(float k);
+  void setCwsWidthBins(int bins);
+  void setCwsTopEndpoints(int count);
+  void setCwsMinPathLength(int length);
+
+  void setAasEnable(bool enable);
+  void setAasK(float k);
+  void setAasTopPaths(int count);
+  void setAasOverflowGate(float gate);
+  void setAasMinPathLength(int length);
+
+  // ECP parameters
+  void setEcpScale(float scale);
+  void setEcpWeightMax(float max);
+  void setEcpTopEndpointFrac(float frac);
+
   void setDebug(int pause_iterations,
                 int update_iterations,
                 bool draw_bins,
@@ -193,6 +249,62 @@ class Replace
   bool skipIoMode_ = false;
   bool disableRevertIfDiverge_ = false;
   bool enable_routing_congestion_ = false;
+
+  // Dynamic timing weights
+  bool td_enable_dynamic_weights_ = false;
+  float td_weight_min_ = 1.0f;
+  float td_weight_max_ = 5.0f;
+  float td_congestion_alpha_ = 0.5f;
+  int td_ramp_iterations_ = 200;
+  int td_update_period_ = 10;
+  float td_initial_nets_percent_ = 5.0f;
+  float td_final_nets_percent_ = 20.0f;
+  double td_slack_norm_ = 0.1;
+  double td_length_norm_ = 100.0;
+  float td_overflow_limit_ = 0.1f;
+
+  // Slack-severity shaping
+  float td_severity_slack_norm_ = 0.1f;
+  float td_severity_ratio_cap_ = 5.0f;
+  float td_severity_weight_scale_ = 1.0f;
+  float td_severity_weight_limit_ = 10.0f;
+  float td_severity_coverage_scale_ = 1.0f;
+  float td_severity_coverage_limit_ = 2.0f;
+
+  // Endpoint-driven selection
+  int td_top_endpoints_ = 0;
+  float td_slack_thresh_ = 0.0f;
+
+  // Resizer interaction / guard knobs
+  float td_noncrit_slack_budget_ns_ = 0.05f;
+  float td_setup_guard_cap_ns_ = 0.03f;
+  float td_guard_window_ns_ = 0.0f;
+  float td_post_cts_hold_floor_ns_ = 0.0f;
+  int td_rebuffer_clone_gate_fanout_ = 20;
+  int td_clone_group_fanout_ = 20;
+  int td_gr_pick_radius_ = 0;
+
+  // Congestion gating & spatial options
+  float td_congestion_gate_ = 0.9f;
+  float td_hot_bin_fraction_ = 0.05f;
+  float td_hot_bin_threshold_ = 0.1f;
+
+  bool cws_enable_ = false;
+  float cws_charge_k_ = 1.0f;
+  int cws_width_bins_ = 2;
+  int cws_top_endpoints_ = 0;
+  int cws_min_path_length_ = 5;
+
+  bool aas_enable_ = false;
+  float aas_k_ = 1.0f;
+  int aas_top_paths_ = 0;
+  float aas_overflow_gate_ = 0.8f;
+  int aas_min_path_length_ = 5;
+
+  // ECP parameters
+  float ecp_scale_ = 1.0f;
+  float ecp_weight_max_ = 2.0f;
+  float ecp_top_endpoint_frac_ = 0.05f;
 
   std::vector<int> timingNetWeightOverflows_;
   Clusters clusters_;

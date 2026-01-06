@@ -88,6 +88,24 @@ bool CloneMove::doMove(const Path* drvr_path,
     return false;
   }
 
+  const int clone_limit = resizer_->cloneGroupFanout();
+  if (clone_limit > 0 && fanout >= clone_limit) {
+    return false;
+  }
+  
+  // Guard: No clock nets
+  if (sta_->isClock(drvr_pin)) {
+    return false;
+  }
+
+  // Guard: Post-CTS hold floor
+  if (resizer_->postCtsHoldFloorNs() > 0.0) {
+    Slack hold_slack = sta_->pinSlack(drvr_pin, sta::MinMax::min());
+    if (hold_slack < resizer_->postCtsHoldFloorNs()) {
+      return false;
+    }
+  }
+
   if (!resizer_->okToBufferNet(drvr_pin)) {
     return false;
   }

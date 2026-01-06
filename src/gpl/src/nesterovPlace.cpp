@@ -47,6 +47,64 @@ NesterovPlace::NesterovPlace(const NesterovPlaceVars& npVars,
   tb_ = std::move(tb);
   log_ = log;
 
+  // Set up TimingBase with options from NesterovPlaceVars
+  if (tb_) {
+    // Dynamic Weight Options
+    TimingBase::DynamicWeightOptions dyn_opts;
+    dyn_opts.enable = npVars_.td_enable_dynamic_weights;
+    dyn_opts.weight_min = npVars_.td_weight_min;
+    dyn_opts.weight_max = npVars_.td_weight_max;
+    dyn_opts.congestion_alpha = npVars_.td_congestion_alpha;
+    dyn_opts.ramp_iterations = npVars_.td_ramp_iterations;
+    dyn_opts.update_period = npVars_.td_update_period;
+    dyn_opts.initial_nets_percent = npVars_.td_initial_nets_percent;
+    dyn_opts.final_nets_percent = npVars_.td_final_nets_percent;
+    dyn_opts.slack_norm = npVars_.td_slack_norm;
+    dyn_opts.length_norm = npVars_.td_length_norm;
+    dyn_opts.overflow_limit = npVars_.td_overflow_limit;
+    dyn_opts.severity_slack_norm = npVars_.td_severity_slack_norm;
+    dyn_opts.severity_ratio_cap = npVars_.td_severity_ratio_cap;
+    dyn_opts.severity_weight_scale = npVars_.td_severity_weight_scale;
+    dyn_opts.severity_weight_limit = npVars_.td_severity_weight_limit;
+    dyn_opts.severity_coverage_scale = npVars_.td_severity_coverage_scale;
+    dyn_opts.severity_coverage_limit = npVars_.td_severity_coverage_limit;
+    dyn_opts.top_endpoints = npVars_.td_top_endpoints;
+    dyn_opts.endpoint_slack_threshold = npVars_.td_slack_thresh;
+    dyn_opts.congestion_gate = npVars_.td_congestion_gate;
+    dyn_opts.hot_bin_fraction = npVars_.td_hot_bin_fraction;
+    dyn_opts.hot_bin_threshold = npVars_.td_hot_bin_threshold;
+    tb_->setDynamicWeightOptions(dyn_opts);
+
+    // Corridor Options
+    TimingBase::CorridorOptions corr_opts;
+    corr_opts.enable = npVars_.cws_enable;
+    corr_opts.charge_k = npVars_.cws_charge_k;
+    corr_opts.width_bins = npVars_.cws_width_bins;
+    corr_opts.top_endpoints = npVars_.cws_top_endpoints;
+    corr_opts.min_path_length = npVars_.cws_min_path_length;
+    tb_->setCorridorOptions(corr_opts);
+
+    // Spring Options
+    TimingBase::SpringOptions spring_opts;
+    spring_opts.enable = npVars_.aas_enable;
+    spring_opts.k = npVars_.aas_k;
+    spring_opts.top_paths = npVars_.aas_top_paths;
+    spring_opts.overflow_gate = npVars_.aas_overflow_gate;
+    spring_opts.min_path_length = npVars_.aas_min_path_length;
+    tb_->setSpringOptions(spring_opts);
+
+    // ECP Options
+    tb_->setECPScale(npVars_.ecp_scale);
+    tb_->setECPWeightMax(npVars_.ecp_weight_max);
+    tb_->setECPTopEndpointFrac(npVars_.ecp_top_endpoint_frac);
+
+    // Resizer Guards
+    tb_->updateResizerGuards(npVars_);
+
+    // Pass NesterovBases
+    tb_->setNesterovBases(nbVec_);
+  }
+
   db_cbk_ = std::make_unique<nesterovDbCbk>(this);
   nbc_->setCbk(db_cbk_.get());
   if (npVars_.timingDrivenMode) {
@@ -436,7 +494,7 @@ void NesterovPlace::runTimingDriven(int iter,
       nb_gcells_before_td += nb->getGCells().size();
     }
 
-    bool shouldTdProceed = tb_->executeTimingDriven(virtual_td_iter);
+    bool shouldTdProceed = tb_->executeTimingDriven(iter, npVars_.maxNesterovIter, average_overflow_unscaled_, virtual_td_iter);
     // TODO remove fillers for TD iterations
     // for (auto& nesterov : nbVec_) {
     //   nesterov->cutFillerCells(nbc_->getDeltaArea());

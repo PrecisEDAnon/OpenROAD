@@ -1995,6 +1995,34 @@ void NesterovBase::initFillerGCells()
 
 NesterovBase::~NesterovBase() = default;
 
+void NesterovBase::setCorridorMask(const std::vector<float>& mask)
+{
+  if (mask.size() != bg_.getBins().size()) {
+    log_->error(GPL, 1200, "Corridor mask size mismatch: {} vs {}", mask.size(), bg_.getBins().size());
+    return;
+  }
+  corridor_mask_ = mask;
+}
+
+void NesterovBase::clearCorridorMask()
+{
+  corridor_mask_.clear();
+}
+
+void NesterovBase::setPathSpringForces(const std::vector<FloatPoint>& forces)
+{
+  if (forces.size() != nb_gcells_.size()) {
+    log_->error(GPL, 1201, "Path spring forces size mismatch: {} vs {}", forces.size(), nb_gcells_.size());
+    return;
+  }
+  path_spring_forces_ = forces;
+}
+
+void NesterovBase::clearPathSpringForces()
+{
+  path_spring_forces_.clear();
+}
+
 // gcell update
 void NesterovBase::updateGCellCenterLocation(
     const std::vector<FloatPoint>& coordis)
@@ -2515,8 +2543,40 @@ void NesterovBase::updateGradients(std::vector<FloatPoint>& sumGrads,
     densityGradSum_ += std::fabs(densityGrads[i].x);
     densityGradSum_ += std::fabs(densityGrads[i].y);
 
-    sumGrads[i].x = wireLengthGrads[i].x + densityPenalty_ * densityGrads[i].x;
-    sumGrads[i].y = wireLengthGrads[i].y + densityPenalty_ * densityGrads[i].y;
+    // Apply Corridor Mask to Density Gradient if available
+    // We need to map GCell index `i` to a bin or apply mask spatially.
+    // Since corridor_mask_ is per-bin, and we only have GCell here, 
+    // we can sample the mask at GCell center.
+    // Or simpler: if corridor mask is active, we assume density penalty 
+    // is modulated by it.
+    
+    float densityMask = 1.0f;
+    if (!corridor_mask_.empty()) {
+        // Find bin for gCell center
+        GCell* gCell = nb_gcells_.at(i);
+        // std::pair<int, int> binIdx = bg_.getDensityMinMaxIdxX(gCell); 
+        // Wait, getDensityMinMaxIdx returns range.
+        // Let's use center bin.
+        int cx = gCell->dCx();
+        int cy = gCell->dCy();
+        int bx = (cx - bg_.lx()) / bg_.getBinSizeX();
+        int by = (cy - bg_.ly()) / bg_.getBinSizeY();
+        bx = std::max(0, std::min(bg_.getBinCntX() - 1, bx));
+        by = std::max(0, std::min(bg_.getBinCntY() - 1, by));
+        int binId = by * bg_.getBinCntX() + bx;
+        if (binId >= 0 && binId < corridor_mask_.size()) {
+            densityMask = corridor_mask_[binId];
+        }
+    }
+
+    sumGrads[i].x = wireLengthGrads[i].x + densityPenalty_ * densityGrads[i].x * densityMask;
+    sumGrads[i].y = wireLengthGrads[i].y + densityPenalty_ * densityGrads[i].y * densityMask;
+
+    // Add Path Spring Forces
+    if (!path_spring_forces_.empty() && i < path_spring_forces_.size()) {
+        sumGrads[i].x += path_spring_forces_[i].x;
+        sumGrads[i].y += path_spring_forces_[i].y;
+    }
 
     FloatPoint wireLengthPreCondi = nbc_->getWireLengthPreconditioner(gCell);
     FloatPoint densityPrecondi = getDensityPreconditioner(gCell);

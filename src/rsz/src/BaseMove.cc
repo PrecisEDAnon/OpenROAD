@@ -464,6 +464,34 @@ bool BaseMove::estimatedSlackOK(const SlackEstimatorParams& params)
     }
     float old_slack = sta_->pinSlack(pin, resizer_->max_);
     float new_slack = old_slack - delay_degrad + delay_imp;
+
+    // Guard 1: Non-critical slack budget
+    // If the path was not critical (old_slack >= 0) but we are degrading it,
+    // ensure we don't degrade it by more than the allowed budget.
+    if (old_slack >= 0 && new_slack < old_slack - resizer_->nonCriticalSlackBudgetNs()) {
+      debugPrint(logger_, RSZ, "remove_buffer", 1, "buffer {} is not removed "
+                 "because it degrades non-critical path {} beyond budget. Old: {}, New: {}, Budget: {}",
+                 db_network_->name(params.driver), db_network_->name(pin),
+                 old_slack, new_slack, resizer_->nonCriticalSlackBudgetNs());
+      return false;
+    }
+
+    // Guard 2: Extra guard window + cap
+    // Prevents pushing slack too close to 0 even if it technically improves or stays positive.
+    float guard_cap = std::min(params.setup_slack_margin, (float)resizer_->setupGuardCapNs());
+    float guard_window = resizer_->setupGuardWindowNs();
+    
+    // Logic: If we are in the "guard window" (or if window is disabled/0 which implies always check if critical-ish),
+    // and the new slack falls below the guard_cap, reject.
+    // "If (guard_window <= 0 || old_slack < guard_window) and new_slack < guard_cap, reject."
+    if ((guard_window <= 0 || old_slack < guard_window) && new_slack < guard_cap) {
+       debugPrint(logger_, RSZ, "remove_buffer", 1, "buffer {} is not removed "
+                 "because new slack {} violates guard cap {} (old_slack: {}, window: {})",
+                 db_network_->name(params.driver), db_network_->name(pin),
+                 new_slack, guard_cap, old_slack, guard_window);
+       return false;
+    }
+
     if (fuzzyGreater(old_slack, new_slack)) {
       // clang-format off
       debugPrint(logger_, RSZ, "remove_buffer", 1, "buffer {} is not removed "

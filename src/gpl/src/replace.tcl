@@ -32,6 +32,48 @@ sta::define_cmd_args "global_placement" {\
     [-timing_driven_net_reweight_overflow timing_driven_net_reweight_overflow]\
     [-timing_driven_net_weight_max timing_driven_net_weight_max]\
     [-timing_driven_nets_percentage timing_driven_nets_percentage]\
+    [-td_enable_dynamic_weights]\
+    [-td_weight_min td_weight_min]\
+    [-td_weight_max td_weight_max]\
+    [-td_congestion_alpha td_congestion_alpha]\
+    [-td_ramp_iterations td_ramp_iterations]\
+    [-td_update_period td_update_period]\
+    [-td_initial_nets_percent td_initial_nets_percent]\
+    [-td_final_nets_percent td_final_nets_percent]\
+    [-td_slack_norm td_slack_norm]\
+    [-td_length_norm td_length_norm]\
+    [-td_overflow_limit td_overflow_limit]\
+    [-td_severity_slack_norm td_severity_slack_norm]\
+    [-td_severity_ratio_cap td_severity_ratio_cap]\
+    [-td_severity_weight_scale td_severity_weight_scale]\
+    [-td_severity_weight_limit td_severity_weight_limit]\
+    [-td_severity_coverage_scale td_severity_coverage_scale]\
+    [-td_severity_coverage_limit td_severity_coverage_limit]\
+    [-td_top_endpoints td_top_endpoints]\
+    [-td_slack_thresh td_slack_thresh]\
+    [-td_noncrit_slack_budget_ns td_noncrit_slack_budget_ns]\
+    [-td_setup_guard_cap_ns td_setup_guard_cap_ns]\
+    [-td_guard_window_ns td_guard_window_ns]\
+    [-td_post_cts_hold_floor_ns td_post_cts_hold_floor_ns]\
+    [-td_rebuffer_clone_gate_fanout td_rebuffer_clone_gate_fanout]\
+    [-td_clone_group_fanout td_clone_group_fanout]\
+    [-td_gr_pick_radius td_gr_pick_radius]\
+    [-td_congestion_gate td_congestion_gate]\
+    [-td_hot_bin_fraction td_hot_bin_fraction]\
+    [-td_hot_bin_threshold td_hot_bin_threshold]\
+    [-cws_enable]\
+    [-cws_charge_k cws_charge_k]\
+    [-cws_width_bins cws_width_bins]\
+    [-cws_top_endpoints cws_top_endpoints]\
+    [-cws_min_path_length cws_min_path_length]\
+    [-aas_enable]\
+    [-aas_k aas_k]\
+    [-aas_top_paths aas_top_paths]\
+    [-aas_overflow_gate aas_overflow_gate]\
+    [-aas_min_path_length aas_min_path_length]\
+    [-ecp_scale ecp_scale]\
+    [-ecp_weight_max ecp_weight_max]\
+    [-ecp_top_endpoint_frac ecp_top_endpoint_frac]\
     [-pad_left pad_left]\
     [-pad_right pad_right]\
     [-disable_revert_if_diverge]\
@@ -55,6 +97,22 @@ proc global_placement { args } {
       -timing_driven_net_weight_max \
       -timing_driven_nets_percentage \
       -keep_resize_below_overflow \
+      -td_weight_min -td_weight_max -td_congestion_alpha \
+      -td_ramp_iterations -td_update_period \
+      -td_initial_nets_percent -td_final_nets_percent \
+      -td_slack_norm -td_length_norm -td_overflow_limit \
+      -td_severity_slack_norm -td_severity_ratio_cap \
+      -td_severity_weight_scale -td_severity_weight_limit \
+      -td_severity_coverage_scale -td_severity_coverage_limit \
+      -td_top_endpoints -td_slack_thresh \
+      -td_noncrit_slack_budget_ns -td_setup_guard_cap_ns \
+      -td_guard_window_ns -td_post_cts_hold_floor_ns \
+      -td_rebuffer_clone_gate_fanout -td_clone_group_fanout \
+      -td_gr_pick_radius -td_congestion_gate \
+      -td_hot_bin_fraction -td_hot_bin_threshold \
+      -cws_charge_k -cws_width_bins -cws_top_endpoints -cws_min_path_length \
+      -aas_k -aas_top_paths -aas_overflow_gate -aas_min_path_length \
+      -ecp_scale -ecp_weight_max -ecp_top_endpoint_frac \
       -pad_left -pad_right} \
     flags {-skip_initial_place \
       -skip_nesterov_place \
@@ -66,9 +124,11 @@ proc global_placement { args } {
       -skip_io \
       -incremental \
       -disable_revert_if_diverge \
-      -enable_routing_congestion}
+      -enable_routing_congestion \
+      -td_enable_dynamic_weights \
+      -cws_enable -aas_enable}
 
-  # flow control for initial_place
+  # flow control for the initial placement phase
   if { [info exists flags(-skip_initial_place)] } {
     gpl::set_initial_place_max_iter_cmd 0
   } elseif { [info exists keys(-initial_place_max_iter)] } {
@@ -77,27 +137,71 @@ proc global_placement { args } {
     gpl::set_initial_place_max_iter_cmd $initial_place_max_iter
   }
 
-  if { [info exists flags(-force_cpu)] } {
-    utl::warn "GPL" 152 "-force_cpu is deprecated."
-  }
-
+  # Skip IO handling
   set skip_io [info exists flags(-skip_io)]
   gpl::set_skip_io_mode_cmd $skip_io
   if { $skip_io } {
+    # no IO legalization run during the GP skip-io stage
     gpl::set_initial_place_max_iter_cmd 0
   }
 
   set timing_driven [info exists flags(-timing_driven)]
   gpl::set_timing_driven_mode $timing_driven
   if { $timing_driven } {
-    if { [get_libs -quiet "*"] == {} } {
-      utl::error GPL 121 "No liberty libraries found."
-    }
-
     if { $skip_io } {
       utl::warn "GPL" 150 "-skip_io will disable timing driven mode."
       gpl::set_timing_driven_mode 0
     }
+
+    if { [info exists flags(-td_enable_dynamic_weights)] } { gpl::set_td_enable_dynamic_weights_cmd 1 }
+    if { [info exists keys(-td_weight_min)] } { gpl::set_td_weight_min_cmd $keys(-td_weight_min) }
+    if { [info exists keys(-td_weight_max)] } { gpl::set_td_weight_max_cmd $keys(-td_weight_max) }
+    if { [info exists keys(-td_congestion_alpha)] } { gpl::set_td_congestion_alpha_cmd $keys(-td_congestion_alpha) }
+    if { [info exists keys(-td_ramp_iterations)] } { gpl::set_td_ramp_iterations_cmd $keys(-td_ramp_iterations) }
+    if { [info exists keys(-td_update_period)] } { gpl::set_td_update_period_cmd $keys(-td_update_period) }
+    if { [info exists keys(-td_initial_nets_percent)] } { gpl::set_td_initial_nets_percent_cmd $keys(-td_initial_nets_percent) }
+    if { [info exists keys(-td_final_nets_percent)] } { gpl::set_td_final_nets_percent_cmd $keys(-td_final_nets_percent) }
+    if { [info exists keys(-td_slack_norm)] } { gpl::set_td_slack_norm_cmd $keys(-td_slack_norm) }
+    if { [info exists keys(-td_length_norm)] } { gpl::set_td_length_norm_cmd $keys(-td_length_norm) }
+    if { [info exists keys(-td_overflow_limit)] } { gpl::set_td_overflow_limit_cmd $keys(-td_overflow_limit) }
+    
+    if { [info exists keys(-td_severity_slack_norm)] } { gpl::set_td_severity_slack_norm_cmd $keys(-td_severity_slack_norm) }
+    if { [info exists keys(-td_severity_ratio_cap)] } { gpl::set_td_severity_ratio_cap_cmd $keys(-td_severity_ratio_cap) }
+    if { [info exists keys(-td_severity_weight_scale)] } { gpl::set_td_severity_weight_scale_cmd $keys(-td_severity_weight_scale) }
+    if { [info exists keys(-td_severity_weight_limit)] } { gpl::set_td_severity_weight_limit_cmd $keys(-td_severity_weight_limit) }
+    if { [info exists keys(-td_severity_coverage_scale)] } { gpl::set_td_severity_coverage_scale_cmd $keys(-td_severity_coverage_scale) }
+    if { [info exists keys(-td_severity_coverage_limit)] } { gpl::set_td_severity_coverage_limit_cmd $keys(-td_severity_coverage_limit) }
+    
+    if { [info exists keys(-td_top_endpoints)] } { gpl::set_td_top_endpoints_cmd $keys(-td_top_endpoints) }
+    if { [info exists keys(-td_slack_thresh)] } { gpl::set_td_slack_thresh_cmd $keys(-td_slack_thresh) }
+    
+    if { [info exists keys(-td_noncrit_slack_budget_ns)] } { gpl::set_td_noncrit_slack_budget_ns_cmd $keys(-td_noncrit_slack_budget_ns) }
+    if { [info exists keys(-td_setup_guard_cap_ns)] } { gpl::set_td_setup_guard_cap_ns_cmd $keys(-td_setup_guard_cap_ns) }
+    if { [info exists keys(-td_guard_window_ns)] } { gpl::set_td_guard_window_ns_cmd $keys(-td_guard_window_ns) }
+    if { [info exists keys(-td_post_cts_hold_floor_ns)] } { gpl::set_td_post_cts_hold_floor_ns_cmd $keys(-td_post_cts_hold_floor_ns) }
+    if { [info exists keys(-td_rebuffer_clone_gate_fanout)] } { gpl::set_td_rebuffer_clone_gate_fanout_cmd $keys(-td_rebuffer_clone_gate_fanout) }
+    if { [info exists keys(-td_clone_group_fanout)] } { gpl::set_td_clone_group_fanout_cmd $keys(-td_clone_group_fanout) }
+    if { [info exists keys(-td_gr_pick_radius)] } { gpl::set_td_gr_pick_radius_cmd $keys(-td_gr_pick_radius) }
+    
+    if { [info exists keys(-td_congestion_gate)] } { gpl::set_td_congestion_gate_cmd $keys(-td_congestion_gate) }
+    if { [info exists keys(-td_hot_bin_fraction)] } { gpl::set_td_hot_bin_fraction_cmd $keys(-td_hot_bin_fraction) }
+    if { [info exists keys(-td_hot_bin_threshold)] } { gpl::set_td_hot_bin_threshold_cmd $keys(-td_hot_bin_threshold) }
+    
+    if { [info exists flags(-cws_enable)] } { gpl::set_cws_enable_cmd 1 }
+    if { [info exists keys(-cws_charge_k)] } { gpl::set_cws_charge_k_cmd $keys(-cws_charge_k) }
+    if { [info exists keys(-cws_width_bins)] } { gpl::set_cws_width_bins_cmd $keys(-cws_width_bins) }
+    if { [info exists keys(-cws_top_endpoints)] } { gpl::set_cws_top_endpoints_cmd $keys(-cws_top_endpoints) }
+    if { [info exists keys(-cws_min_path_length)] } { gpl::set_cws_min_path_length_cmd $keys(-cws_min_path_length) }
+    
+    if { [info exists flags(-aas_enable)] } { gpl::set_aas_enable_cmd 1 }
+    if { [info exists keys(-aas_k)] } { gpl::set_aas_k_cmd $keys(-aas_k) }
+    if { [info exists keys(-aas_top_paths)] } { gpl::set_aas_top_paths_cmd $keys(-aas_top_paths) }
+    if { [info exists keys(-aas_overflow_gate)] } { gpl::set_aas_overflow_gate_cmd $keys(-aas_overflow_gate) }
+    if { [info exists keys(-aas_min_path_length)] } { gpl::set_aas_min_path_length_cmd $keys(-aas_min_path_length) }
+    
+    if { [info exists keys(-ecp_scale)] } { gpl::set_ecp_scale_cmd $keys(-ecp_scale) }
+    if { [info exists keys(-ecp_weight_max)] } { gpl::set_ecp_weight_max_cmd $keys(-ecp_weight_max) }
+    if { [info exists keys(-ecp_top_endpoint_frac)] } { gpl::set_ecp_top_endpoint_frac_cmd $keys(-ecp_top_endpoint_frac) }
 
     if { [info exists keys(-timing_driven_net_reweight_overflow)] } {
       set overflow_list $keys(-timing_driven_net_reweight_overflow)
