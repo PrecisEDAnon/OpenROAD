@@ -178,7 +178,7 @@ class Grid
 
   std::unique_ptr<GridSwitchedPower> switched_power_cell_;
 
-  bool allow_repair_channels_ = true;
+  bool allow_repair_channels_ = false;
 
   std::vector<std::unique_ptr<Rings>> rings_;
   std::vector<std::unique_ptr<Straps>> straps_;

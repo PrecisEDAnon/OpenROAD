@@ -450,7 +450,7 @@ bool RepairHold::repairHold(VertexSeq& ends,
       resizer_->level_drvr_vertices_valid_ = false;
     }
     if (inserted_buffer_count_ > max_buffer_count) {
-      logger_->warn(RSZ, 60, "Max buffer count reached.");
+      logger_->error(RSZ, 60, "Max buffer count reached.");
     }
     if (resizer_->overMaxArea()) {
       logger_->error(RSZ, 50, "Max utilization reached.");
