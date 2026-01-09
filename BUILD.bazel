@@ -175,6 +175,7 @@ cc_library(
     srcs = [
         "src/Design.cc",
         "src/OpenRoad.cc",
+        "src/Surrogate.cc",
         "src/Tech.cc",
         "src/Timing.cc",
         ":openroad_swig",
@@ -200,6 +201,7 @@ cc_library(
         "include/ord/Design.h",
         "include/ord/InitOpenRoad.hh",
         "include/ord/OpenRoad.hh",
+        "include/ord/Surrogate.hh",
         "include/ord/Tech.h",
         "include/ord/Timing.h",
         "include/ord/Version.hh",
