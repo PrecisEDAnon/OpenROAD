@@ -761,8 +761,11 @@ bool RepairSetup::repairPath(Path* path,
           } else {
             changed++;
           }
-          // Move on to the next gate
-          break;
+          // Any successful move can mutate the timing graph (buffer insertion,
+          // cloning, net rewiring, etc.), which can invalidate Path/Edge ids in
+          // the expanded path. Bail out and let the outer repair loop
+          // re-query STA for a fresh worst-slack path.
+          return true;
         }
         debugPrint(logger_,
                    RSZ,

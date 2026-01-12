@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -664,25 +665,41 @@ LibertyCell* BaseMove::upsizeCell(LibertyPort* in_port,
   if (!swappable_cells.empty()) {
     const char* in_port_name = in_port->name();
     const char* drvr_port_name = drvr_port->name();
+    const auto corner_port = [&](LibertyPort* port) -> LibertyPort* {
+      return port ? port->cornerPort(lib_ap) : nullptr;
+    };
+    const auto safe_drive = [&](LibertyPort* port) -> float {
+      return port ? port->driveResistance()
+                  : std::numeric_limits<float>::infinity();
+    };
+    const auto safe_intrinsic = [&](LibertyPort* port) -> ArcDelay {
+      return port ? port->intrinsicDelay(this) : INF;
+    };
+    const auto safe_cap = [&](LibertyPort* port) -> float {
+      return port ? port->capacitance() : 0.0f;
+    };
     sort(swappable_cells,
          [=](const LibertyCell* cell1, const LibertyCell* cell2) {
-           LibertyPort* port1
-               = cell1->findLibertyPort(drvr_port_name)->cornerPort(lib_ap);
-           LibertyPort* port2
-               = cell2->findLibertyPort(drvr_port_name)->cornerPort(lib_ap);
-           const float drive1 = port1->driveResistance();
-           const float drive2 = port2->driveResistance();
-           const ArcDelay intrinsic1 = port1->intrinsicDelay(this);
-           const ArcDelay intrinsic2 = port2->intrinsicDelay(this);
-           const float capacitance1 = port1->capacitance();
-           const float capacitance2 = port2->capacitance();
+           LibertyPort* port1 = corner_port(cell1->findLibertyPort(drvr_port_name));
+           LibertyPort* port2 = corner_port(cell2->findLibertyPort(drvr_port_name));
+           const float drive1 = safe_drive(port1);
+           const float drive2 = safe_drive(port2);
+           const ArcDelay intrinsic1 = safe_intrinsic(port1);
+           const ArcDelay intrinsic2 = safe_intrinsic(port2);
+           const float capacitance1 = safe_cap(port1);
+           const float capacitance2 = safe_cap(port2);
            return std::tie(drive2, intrinsic1, capacitance1)
                   < std::tie(drive1, intrinsic2, capacitance2);
          });
-    const float drive = drvr_port->cornerPort(lib_ap)->driveResistance();
+    LibertyPort* drvr_corner = corner_port(drvr_port);
+    LibertyPort* in_corner = corner_port(in_port);
+    if (drvr_corner == nullptr || in_corner == nullptr) {
+      return nullptr;
+    }
+    const float drive = drvr_corner->driveResistance();
     const float delay
         = resizer_->gateDelay(drvr_port, load_cap, resizer_->tgt_slew_dcalc_ap_)
-          + prev_drive * in_port->cornerPort(lib_ap)->capacitance();
+          + prev_drive * in_corner->capacitance();
 
     for (LibertyCell* swappable : swappable_cells) {
       LibertyCell* swappable_corner = swappable->cornerCell(lib_ap);
@@ -690,6 +707,9 @@ LibertyCell* BaseMove::upsizeCell(LibertyPort* in_port,
           = swappable_corner->findLibertyPort(drvr_port_name);
       LibertyPort* swappable_input
           = swappable_corner->findLibertyPort(in_port_name);
+      if (swappable_drvr == nullptr || swappable_input == nullptr) {
+        continue;
+      }
       const float swappable_drive = swappable_drvr->driveResistance();
       // Include delay of previous driver into swappable gate.
       const float swappable_delay

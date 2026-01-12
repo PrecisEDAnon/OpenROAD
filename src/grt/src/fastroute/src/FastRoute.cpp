@@ -588,9 +588,18 @@ void FastRouteCore::addVerticalAdjustments(
     const std::vector<int>& track_space,
     bool release)
 {
+  if (layer <= 0 || layer > num_layers_) {
+    return;
+  }
   // Add intervals to set or release resources for each tile
   for (int x = first_tile.getX(); x <= last_tile.getX(); x++) {
+    if (x < 0 || x >= x_grid_) {
+      continue;
+    }
     for (int y = first_tile.getY(); y < last_tile.getY(); y++) {
+      if (y < 0 || y >= y_grid_ - 1) {
+        continue;
+      }
       if (x == first_tile.getX()) {
         if (release) {
           releaseResourcesOnInterval(
@@ -629,9 +638,18 @@ void FastRouteCore::addHorizontalAdjustments(
     const std::vector<int>& track_space,
     bool release)
 {
+  if (layer <= 0 || layer > num_layers_) {
+    return;
+  }
   // Add intervals to set or release resources for each tile
   for (int x = first_tile.getX(); x < last_tile.getX(); x++) {
+    if (x < 0 || x >= x_grid_ - 1) {
+      continue;
+    }
     for (int y = first_tile.getY(); y <= last_tile.getY(); y++) {
+      if (y < 0 || y >= y_grid_) {
+        continue;
+      }
       if (y == first_tile.getY()) {
         if (release) {
           releaseResourcesOnInterval(
@@ -668,6 +686,13 @@ void FastRouteCore::initBlockedIntervals(std::vector<int>& track_space)
     int x = std::get<0>(tile);
     int y = std::get<1>(tile);
     int layer = std::get<2>(tile);
+    // Blockages may extend slightly outside the die area (e.g. wide PDN straps
+    // at the boundary). Ignore out-of-bounds tiles to prevent invalid grid
+    // accesses when applying adjustments.
+    if (layer <= 0 || layer > num_layers_ || x < 0 || x >= x_grid_ || y < 0
+        || y >= y_grid_ - 1) {
+      continue;
+    }
     int edge_cap = getEdgeCapacity(x, y, x, y + 1, layer);
     if (edge_cap > 0) {
       int reduce = 0;
@@ -691,6 +716,10 @@ void FastRouteCore::initBlockedIntervals(std::vector<int>& track_space)
     int x = std::get<0>(tile);
     int y = std::get<1>(tile);
     int layer = std::get<2>(tile);
+    if (layer <= 0 || layer > num_layers_ || x < 0 || x >= x_grid_ - 1
+        || y < 0 || y >= y_grid_) {
+      continue;
+    }
     int edge_cap = getEdgeCapacity(x, y, x + 1, y, layer);
     if (edge_cap > 0) {
       int reduce = 0;
