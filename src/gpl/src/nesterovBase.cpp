@@ -1686,8 +1686,7 @@ NesterovBase::NesterovBase(NesterovBaseVars nbVars,
              "Initializing Nesterov region: {}",
              pb_->group() ? pb_->group()->getName() : "Top-level");
 
-  // Set a fixed seed
-  srand(42);
+  srand(nbVars.randomSeed);
   // area update from pb
   stdInstsArea_ = pb_->stdInstsArea();
   macroInstsArea_ = pb_->macroInstsArea();

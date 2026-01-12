@@ -96,6 +96,7 @@ void Replace::reset()
   disableRevertIfDiverge_ = false;
 
   padLeft_ = padRight_ = 0;
+  randomSeed_ = 42;
 
   timingNetWeightOverflows_.clear();
   timingNetWeightOverflows_.shrink_to_fit();
@@ -105,6 +106,11 @@ void Replace::reset()
 void Replace::addPlacementCluster(const Cluster& cluster)
 {
   clusters_.emplace_back(cluster);
+}
+
+void Replace::setRandomSeed(const int seed)
+{
+  randomSeed_ = seed;
 }
 
 void Replace::doIncrementalPlace(int threads)
@@ -287,6 +293,7 @@ bool Replace::initNesterovPlace(int threads)
   if (!nbc_) {
     NesterovBaseVars nbVars;
     nbVars.targetDensity = density_;
+    nbVars.randomSeed = randomSeed_;
 
     if (binGridCntX_ != 0 && binGridCntY_ != 0) {
       nbVars.isSetBinCnt = true;

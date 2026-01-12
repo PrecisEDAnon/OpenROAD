@@ -111,6 +111,13 @@ set_bin_grid_cnt_cmd(int cnt_x, int cnt_y)
 }
 
 void
+set_random_seed_cmd(int seed)
+{
+  Replace* replace = getReplace();
+  replace->setRandomSeed(seed);
+}
+
+void
 set_overflow_cmd(float overflow)
 {
   Replace* replace = getReplace();

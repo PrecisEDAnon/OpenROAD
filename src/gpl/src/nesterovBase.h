@@ -744,6 +744,7 @@ class NesterovBaseVars
 {
  public:
   float targetDensity = 1.0;
+  int randomSeed = 42;
   int binCntX = 0;
   int binCntY = 0;
   float minWireLengthForceBar = -300;

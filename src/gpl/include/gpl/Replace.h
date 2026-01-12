@@ -82,6 +82,8 @@ class Replace
 
   void setBinGridCnt(int binGridCntX, int binGridCntY);
 
+  void setRandomSeed(int seed);
+
   void setTargetDensity(float density);
   // Execute gpl with uniform density as target density
   void setUniformTargetDensityMode(bool mode);
@@ -200,6 +202,7 @@ class Replace
   // temp variable; OpenDB should have these values.
   int padLeft_ = 0;
   int padRight_ = 0;
+  int randomSeed_ = 42;
   bool gui_debug_ = false;
   int gui_debug_pause_iterations_ = 10;
   int gui_debug_update_iterations_ = 10;
