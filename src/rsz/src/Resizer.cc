@@ -4538,7 +4538,9 @@ bool Resizer::recoverPower(float recover_power_percent,
              == est::ParasiticsSrc::detailed_routing) {
     opendp_->initMacrosAndGrid();
   }
-  return more_recover_power_
+  const bool use_more_recover_power
+      = more_recover_power_ && recover_power_percent >= 0.999999f;
+  return use_more_recover_power
              ? recover_power_more_->recoverPower(recover_power_percent, verbose)
              : recover_power_->recoverPower(recover_power_percent, verbose);
 }

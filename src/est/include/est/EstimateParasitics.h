@@ -183,6 +183,23 @@ class EstimateParasitics : public sta::dbStaState
                                const std::vector<odb::Point>& sink_locations);
   SteinerTree* makeSteinerTree(const sta::Pin* drvr_pin);
   void updateParasitics(bool save_guides = false);
+  // When incremental parasitics is enabled and parasitics source is global
+  // routing, updateParasitics() normally calls
+  // IncrementalGRoute::updateRoutes() to reroute dirty nets. Some optimization
+  // flows may perform speculative ECOs that are later undone; in those cases,
+  // rerouting during speculation can perturb global routing state even if the
+  // ECOs are rolled back.
+  //
+  // Disable incremental route updates to keep updateParasitics() side-effect
+  // free w.r.t. global routing until the caller is ready to commit changes.
+  bool isIncrementalRouteUpdatesEnabled() const
+  {
+    return incremental_route_updates_enabled_;
+  }
+  void setIncrementalRouteUpdatesEnabled(bool enabled)
+  {
+    incremental_route_updates_enabled_ = enabled;
+  }
   void ensureWireParasitic(const sta::Pin* drvr_pin);
   void ensureWireParasitic(const sta::Pin* drvr_pin, const sta::Net* net);
   void highlightSteiner(const sta::Pin* drvr);
@@ -260,6 +277,7 @@ class EstimateParasitics : public sta::dbStaState
   int dbu_ = 0;
 
   bool incremental_parasitics_enabled_ = false;
+  bool incremental_route_updates_enabled_ = true;
 
   // constants
   const sta::MinMax* min_ = sta::MinMax::min();
