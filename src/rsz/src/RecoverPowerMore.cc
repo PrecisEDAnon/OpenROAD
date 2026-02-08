@@ -5,47 +5,64 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
+#include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
-#include "est/EstimateParasitics.h"
 #include "odb/db.h"
 #include "rsz/Resizer.hh"
 #include "sta/Clock.hh"
 #include "sta/Corner.hh"
+#include "sta/DcalcAnalysisPt.hh"
 #include "sta/Delay.hh"
+#include "sta/Fuzzy.hh"
 #include "sta/Graph.hh"
+#include "sta/GraphDelayCalc.hh"
+#include "sta/InputDrive.hh"
 #include "sta/Liberty.hh"
 #include "sta/Network.hh"
 #include "sta/NetworkClass.hh"
+#include "sta/Parasitics.hh"
+#include "sta/PathExpanded.hh"
+#include "sta/PortDirection.hh"
 #include "sta/PowerClass.hh"
 #include "sta/Sdc.hh"
+#include "sta/Search.hh"
+#include "sta/TimingArc.hh"
+#include "sta/Units.hh"
+#include "sta/Vector.hh"
 #include "utl/Logger.h"
 
 namespace rsz {
 
+using std::pair;
 using std::string;
 using std::vector;
 
 using utl::RSZ;
 
+using sta::ArcDelay;
+using sta::Delay;
+using sta::Edge;
+using sta::Instance;
+using sta::LibertyCellSeq;
+using sta::LibertyPort;
+using sta::Path;
+using sta::PathExpanded;
+using sta::sort;
+using sta::VertexOutEdgeIterator;
+
 namespace {
 
 constexpr int kDigits = 3;
-
-Net* mutableNet(const Net* net)
-{
-  // OpenSTA/Network APIs used by the limit checks are not const-correct.
-  // They take Net* but do not mutate the net, so casting away const is safe.
-  return const_cast<Net*>(net);
-}
 
 }  // namespace
 
@@ -62,7 +79,212 @@ void RecoverPowerMore::init()
 }
 
 bool RecoverPowerMore::recoverPower(const float recover_power_percent,
+                                    bool verbose)
+{
+  init();
+
+  if (recover_power_percent <= 0.0f) {
+    return false;
+  }
+
+  // 0db856-lite:
+  // For full power recovery (recover_power_percent ~= 1.0), run both:
+  //   - a 7bc521-style recover_power baseline
+  //   - the 0db856-style recover_power
+  // and keep whichever yields lower PDP (= power_total * effective_period).
+  //
+  // This makes 0db856 "soft": it should not regress vs the baseline engine on
+  // circuits where it hurts PDP.
+  const bool lite_mode = recover_power_percent >= 0.999f;
+  if (lite_mode) {
+    // Ensure clock network exists for sta_->isClock().
+    sta_->ensureClkNetwork();
+
+    const float clock_period = minClockPeriod();
+    const Corner* corner = selectPowerCorner();
+    if (!(clock_period > 0.0f) || corner == nullptr) {
+      // Can't compute PDP; fall back to the native implementation.
+      record_actions_ = false;
+      disable_buffer_removals_ = false;
+      action_history_.clear();
+      return recoverPower0db856(recover_power_percent, verbose);
+    }
+    corner_ = corner;
+
+    // Enable incremental parasitics for the entire speculative evaluation.
+    // recoverPower0db856()/recoverPower7bc521() each create their own guards,
+    // but this wrapper also calls updateParasitics() between trials.
+    est::IncrementalParasiticsGuard guard(estimate_parasitics_);
+
+    const bool prev_incr_route_updates
+        = estimate_parasitics_->isIncrementalRouteUpdatesEnabled();
+    // Disable incremental route updates during speculative evaluation so that
+    // rolling back swaps does not perturb global-routing/parasitics state.
+    estimate_parasitics_->setIncrementalRouteUpdatesEnabled(false);
+
+    // 1) Baseline (7bc521-like) trial run.
+    record_actions_ = false;
+    disable_buffer_removals_ = true;
+    std::vector<ActionRecord> baseline_actions;
+    const bool baseline_changed = recoverPower7bc521(
+        recover_power_percent, /*verbose*/ false, baseline_actions);
+
+    estimate_parasitics_->updateParasitics(false);
+    sta_->delaysInvalid();
+    sta_->updateTiming(true);
+    sta_->findRequireds();
+    const PdpMetrics baseline = measurePdp();
+
+    // Restore entry state before running 0db856.
+    undoActions(baseline_actions, /*verbose*/ false);
+
+    estimate_parasitics_->updateParasitics(false);
+    sta_->delaysInvalid();
+    sta_->updateTiming(true);
+    sta_->findRequireds();
+
+    // 2) 0db856 trial run.
+    record_actions_ = true;
+    disable_buffer_removals_ = true;
+    action_history_.clear();
+    const bool cand_changed
+        = recoverPower0db856(recover_power_percent, verbose);
+
+    estimate_parasitics_->updateParasitics(false);
+    sta_->delaysInvalid();
+    sta_->updateTiming(true);
+    sta_->findRequireds();
+    const PdpMetrics cand = measurePdp();
+
+    constexpr float kPdpImproveEpsFrac = 1e-6f;
+    const bool baseline_valid = std::isfinite(baseline.pdp);
+    const bool cand_valid = std::isfinite(cand.pdp);
+    const bool choose_cand
+        = (baseline_valid && cand_valid)
+              ? (cand.pdp < baseline.pdp * (1.0f - kPdpImproveEpsFrac))
+              : (cand_valid && !baseline_valid);
+
+    if (choose_cand) {
+      logger_->info(RSZ,
+                    173,
+                    "recover_power lite: keep 0db856 (PDP {:.6g}, WNS {}), "
+                    "baseline PDP {:.6g}",
+                    cand.pdp,
+                    delayAsString(cand.wns, sta_, kDigits),
+                    baseline.pdp);
+    } else {
+      logger_->info(RSZ,
+                    174,
+                    "recover_power lite: revert to baseline (PDP {:.6g}, WNS "
+                    "{}), 0db856 PDP {:.6g}",
+                    baseline.pdp,
+                    delayAsString(baseline.wns, sta_, kDigits),
+                    cand.pdp);
+      // Restore entry state and re-apply the baseline actions.
+      undoActions(action_history_, verbose);
+      action_history_.clear();
+      applyActions(baseline_actions, /*verbose*/ false);
+    }
+
+    record_actions_ = false;
+    disable_buffer_removals_ = false;
+    estimate_parasitics_->setIncrementalRouteUpdatesEnabled(
+        prev_incr_route_updates);
+    if (prev_incr_route_updates) {
+      estimate_parasitics_->updateParasitics(true);
+      sta_->findRequireds();
+    }
+
+    return choose_cand ? cand_changed : baseline_changed;
+  }
+
+  record_actions_ = false;
+  disable_buffer_removals_ = false;
+  action_history_.clear();
+  return recoverPower0db856(recover_power_percent, verbose);
+}
+
+RecoverPowerMore::PdpMetrics RecoverPowerMore::measurePdp() const
+{
+  PdpMetrics metrics;
+  metrics.clock_period = minClockPeriod();
+  Slack wns;
+  Vertex* worst_vertex;
+  sta_->worstSlack(max_, wns, worst_vertex);
+  (void) worst_vertex;
+  metrics.wns = wns;
+  metrics.power_total = designTotalPower(corner_);
+  if (metrics.clock_period > 0.0f && std::isfinite(wns)) {
+    metrics.effective_period = metrics.clock_period - static_cast<float>(wns);
+  }
+  metrics.pdp = pdpFromPowerSlack(
+      metrics.power_total, metrics.wns, metrics.clock_period);
+  return metrics;
+}
+
+float RecoverPowerMore::pdpFromPowerSlack(const float power_total,
+                                          const Slack wns,
+                                          const float clock_period) const
+{
+  if (!(clock_period > 0.0f) || !std::isfinite(wns)) {
+    return std::numeric_limits<float>::infinity();
+  }
+  const float eff_period = clock_period - static_cast<float>(wns);
+  if (!(eff_period > 0.0f) || !std::isfinite(eff_period)) {
+    return std::numeric_limits<float>::infinity();
+  }
+  if (!(power_total >= 0.0f) || !std::isfinite(power_total)) {
+    return std::numeric_limits<float>::infinity();
+  }
+  return power_total * eff_period;
+}
+
+void RecoverPowerMore::applyActions(const std::vector<ActionRecord>& actions,
                                     const bool verbose)
+{
+  (void) verbose;
+  for (const auto& action : actions) {
+    if (action.type != ActionType::kSwap || action.new_cell == nullptr) {
+      continue;
+    }
+    sta::Instance* inst = network_->findInstance(action.inst_name.c_str());
+    if (inst == nullptr) {
+      continue;
+    }
+    resizer_->replaceCell(inst, action.new_cell, /* journal */ false);
+  }
+  estimate_parasitics_->updateParasitics(false);
+  sta_->delaysInvalid();
+  sta_->updateTiming(true);
+  sta_->findRequireds();
+}
+
+void RecoverPowerMore::undoActions(const std::vector<ActionRecord>& actions,
+                                   const bool verbose)
+{
+  (void) verbose;
+  for (auto it = actions.rbegin(); it != actions.rend(); ++it) {
+    const ActionRecord& action = *it;
+    if (action.type == ActionType::kSwap && action.prev_cell != nullptr) {
+      sta::Instance* inst = network_->findInstance(action.inst_name.c_str());
+      if (inst != nullptr) {
+        resizer_->replaceCell(inst, action.prev_cell, /* journal */ false);
+      }
+      continue;
+    }
+    if (action.type == ActionType::kRemoveBuffer) {
+      resizer_->journalRestore();
+      init();  // journalRestore reinitializes the resizer.
+    }
+  }
+  estimate_parasitics_->updateParasitics(false);
+  sta_->delaysInvalid();
+  sta_->updateTiming(true);
+  sta_->findRequireds();
+}
+
+bool RecoverPowerMore::recoverPower0db856(const float recover_power_percent,
+                                          bool verbose)
 {
   init();
 
@@ -132,8 +354,10 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     // Rank by "power × available headroom" so we focus effort on high-power,
     // non-critical instances. Then break ties by power/headroom/area.
     std::vector<CandidateInstance> sorted = candidates;
-    std::ranges::sort(
-        sorted, [](const CandidateInstance& a, const CandidateInstance& b) {
+    std::sort(
+        sorted.begin(),
+        sorted.end(),
+        [](const CandidateInstance& a, const CandidateInstance& b) {
           const float a_score
               = a.power * static_cast<float>(std::max<Slack>(0.0, a.headroom));
           const float b_score
@@ -222,13 +446,269 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
   if (resize_count_ > 0 || buffer_remove_count_ > 0) {
     logger_->info(
         RSZ,
-        147,
+        3200,
         "Applied {} cell swaps and removed {} buffers for power recovery.",
         resize_count_,
         buffer_remove_count_);
   }
 
   return resize_count_ > 0 || buffer_remove_count_ > 0;
+}
+
+bool RecoverPowerMore::recoverPower7bc521(const float recover_power_percent,
+                                          const bool verbose,
+                                          std::vector<ActionRecord>& actions)
+{
+  init();
+  actions.clear();
+
+  // Sort endpoints by slack.
+  sta::VertexSet* endpoints = sta_->endpoints();
+  std::vector<Vertex*> ends_with_slack;
+  ends_with_slack.reserve(endpoints->size());
+  for (Vertex* end : *endpoints) {
+    const Slack end_slack = sta_->vertexSlack(end, max_);
+    if (end_slack > setup_slack_margin_
+        && end_slack < setup_slack_max_margin_) {
+      ends_with_slack.push_back(end);
+    }
+  }
+
+  std::sort(ends_with_slack.begin(),
+            ends_with_slack.end(),
+            [this](Vertex* a, Vertex* b) {
+              return sta_->vertexSlack(a, max_) > sta_->vertexSlack(b, max_);
+            });
+
+  int max_end_count
+      = static_cast<int>(ends_with_slack.size() * recover_power_percent);
+  max_end_count = std::max(max_end_count, 1);
+
+  Slack worst_slack_before;
+  Vertex* worst_vertex;
+  sta_->worstSlack(max_, worst_slack_before, worst_vertex);
+
+  int end_index = 0;
+  int failed_move_threshold = 0;
+  constexpr int failed_move_threshold_limit = 500;
+  sta::VertexSet bad_vertices(graph_);
+  est::IncrementalParasiticsGuard guard(estimate_parasitics_);
+  for (Vertex* end : ends_with_slack) {
+    resizer_->journalBegin();
+    const Slack end_slack_before = sta_->vertexSlack(end, max_);
+    Slack worst_slack_after;
+
+    ++end_index;
+    if (end_index > max_end_count) {
+      resizer_->journalEnd();
+      break;
+    }
+
+    Path* end_path = sta_->vertexWorstSlackPath(end, max_);
+    ActionRecord action;
+    Vertex* changed_vertex = nullptr;
+    const bool changed = [&]() {
+      PathExpanded expanded(end_path, sta_);
+      if (expanded.size() <= 1) {
+        return false;
+      }
+
+      const int path_length = expanded.size();
+      std::vector<std::pair<int, Delay>> load_delays;
+      const int start_index = expanded.startIndex();
+      const DcalcAnalysisPt* dcalc_ap = end_path->dcalcAnalysisPt(sta_);
+      const int lib_ap = dcalc_ap->libertyIndex();
+      for (int i = start_index; i < path_length; i++) {
+        const Path* path = expanded.path(i);
+        const Vertex* path_vertex = path->vertex(sta_);
+        const Pin* path_pin = path->pin(sta_);
+        if (i > 0 && path_vertex->isDriver(network_)
+            && !network_->isTopLevelPort(path_pin)) {
+          const TimingArc* prev_arc = path->prevArc(sta_);
+          const TimingArc* corner_arc = prev_arc->cornerArc(lib_ap);
+          const Edge* prev_edge = path->prevEdge(sta_);
+          const Delay load_delay
+              = graph_->arcDelay(prev_edge, prev_arc, dcalc_ap->index())
+                - corner_arc->intrinsicDelay();
+          load_delays.emplace_back(i, load_delay);
+        }
+      }
+
+      std::sort(load_delays.begin(),
+                load_delays.end(),
+                [](const auto& lhs, const auto& rhs) {
+                  return lhs.second > rhs.second
+                         || (lhs.second == rhs.second && lhs.first < rhs.first);
+                });
+
+      for (const auto& [drvr_index, ignored] : load_delays) {
+        (void) ignored;
+        const Path* drvr_path = expanded.path(drvr_index);
+        Vertex* drvr_vertex = drvr_path->vertex(sta_);
+        if (bad_vertices.find(drvr_vertex) != bad_vertices.end()) {
+          continue;
+        }
+
+        const Pin* drvr_pin = drvr_vertex->pin();
+        Instance* drvr = network_->instance(drvr_pin);
+        if (drvr == nullptr || resizer_->dontTouch(drvr)) {
+          continue;
+        }
+
+        const int in_index = drvr_index - 1;
+        const Path* in_path = expanded.path(in_index);
+        const Pin* in_pin = in_path->pin(sta_);
+        const LibertyPort* in_port = network_->libertyPort(in_pin);
+        if (in_port == nullptr) {
+          continue;
+        }
+
+        float prev_drive = 0.0;
+        if (drvr_index >= 2) {
+          const int prev_drvr_index = drvr_index - 2;
+          const Path* prev_drvr_path = expanded.path(prev_drvr_index);
+          const Pin* prev_drvr_pin = prev_drvr_path->pin(sta_);
+          const LibertyPort* prev_drvr_port
+              = network_->libertyPort(prev_drvr_pin);
+          if (prev_drvr_port) {
+            prev_drive = prev_drvr_port->driveResistance();
+          }
+        }
+
+        const LibertyPort* drvr_port = network_->libertyPort(drvr_pin);
+        if (drvr_port == nullptr) {
+          continue;
+        }
+
+        const float load_cap = graph_delay_calc_->loadCap(drvr_pin, dcalc_ap);
+        LibertyCell* curr_cell = network_->libertyCell(drvr);
+        if (curr_cell == nullptr) {
+          continue;
+        }
+        LibertyCellSeq swappable_cells = resizer_->getSwappableCells(curr_cell);
+        constexpr double delay_margin = 1.5;
+
+        LibertyCell* best_cell = nullptr;
+        if (!swappable_cells.empty()) {
+          const char* in_port_name = in_port->name();
+          const char* drvr_port_name = drvr_port->name();
+          sort(&swappable_cells,
+               [=, this](const LibertyCell* cell1, const LibertyCell* cell2) {
+                 LibertyPort* port1 = cell1->findLibertyPort(drvr_port_name)
+                                          ->cornerPort(lib_ap);
+                 const LibertyPort* port2
+                     = cell2->findLibertyPort(drvr_port_name)
+                           ->cornerPort(lib_ap);
+                 const float drive1 = port1->driveResistance();
+                 const float drive2 = port2->driveResistance();
+                 const ArcDelay intrinsic1 = port1->intrinsicDelay(this);
+                 const ArcDelay intrinsic2 = port2->intrinsicDelay(this);
+                 return (std::tie(drive1, intrinsic2)
+                         < std::tie(drive2, intrinsic1));
+               });
+
+          const float drive = drvr_port->cornerPort(lib_ap)->driveResistance();
+          const float delay
+              = resizer_->gateDelay(
+                    drvr_port, load_cap, resizer_->tgt_slew_dcalc_ap_)
+                + prev_drive * in_port->cornerPort(lib_ap)->capacitance();
+
+          for (LibertyCell* swappable : swappable_cells) {
+            if (swappable == nullptr) {
+              continue;
+            }
+            const LibertyCell* swappable_corner = swappable->cornerCell(lib_ap);
+            const LibertyPort* swappable_drvr
+                = swappable_corner->findLibertyPort(drvr_port_name);
+            const LibertyPort* swappable_input
+                = swappable_corner->findLibertyPort(in_port_name);
+            const float current_drive = swappable_drvr->driveResistance();
+            const float current_delay
+                = resizer_->gateDelay(swappable_drvr, load_cap, dcalc_ap)
+                  + prev_drive * swappable_input->capacitance();
+
+            const bool meets_size = [&]() {
+              const odb::dbMaster* cand_master
+                  = db_network_->staToDb(swappable);
+              const odb::dbMaster* curr_master
+                  = db_network_->staToDb(curr_cell);
+              if (cand_master == nullptr || curr_master == nullptr) {
+                return false;
+              }
+              return cand_master->getWidth() <= curr_master->getWidth()
+                     && cand_master->getHeight() == curr_master->getHeight();
+            }();
+
+            if (!resizer_->dontUse(swappable) && current_drive > drive
+                && current_delay > delay
+                && (current_delay - delay) * delay_margin < end_slack_before
+                && meets_size) {
+              best_cell = swappable;
+            }
+          }
+        }
+
+        if (best_cell == nullptr) {
+          continue;
+        }
+
+        action.type = ActionType::kSwap;
+        action.inst_name = network_->pathName(drvr);
+        action.prev_cell = const_cast<LibertyCell*>(curr_cell);
+        action.new_cell = best_cell;
+        if (resizer_->replaceCell(drvr, best_cell, /* journal */ true)) {
+          changed_vertex = drvr_vertex;
+          return true;
+        }
+      }
+
+      return false;
+    }();
+
+    if (!changed) {
+      resizer_->journalEnd();
+      continue;
+    }
+
+    estimate_parasitics_->updateParasitics(false);
+    sta_->findRequireds();
+
+    sta_->worstSlack(max_, worst_slack_after, worst_vertex);
+    const float worst_slack_percent
+        = (worst_slack_before != 0.0)
+              ? std::abs((worst_slack_before - worst_slack_after)
+                         / worst_slack_before * 100.0)
+              : 0.0f;
+    const bool better = (worst_slack_percent < 0.0001f
+                         || (worst_slack_before > 0.0
+                             && worst_slack_after / worst_slack_before > 0.5));
+
+    if (better) {
+      failed_move_threshold = 0;
+      resizer_->journalEnd();
+      actions.push_back(action);
+      if (verbose) {
+        debugPrint(logger_,
+                   RSZ,
+                   "recover_power",
+                   2,
+                   "baseline accept swap {}",
+                   action.inst_name);
+      }
+    } else {
+      if (changed_vertex != nullptr) {
+        bad_vertices.insert(changed_vertex);
+      }
+      ++failed_move_threshold;
+      if (failed_move_threshold > failed_move_threshold_limit) {
+        resizer_->journalRestore();
+        break;
+      }
+      resizer_->journalRestore();
+    }
+  }
+
+  return !actions.empty();
 }
 
 std::vector<const Net*> RecoverPowerMore::instanceSignalNets(
@@ -281,7 +761,7 @@ std::vector<const Net*> RecoverPowerMore::slewCheckNetCone(
       if (net == nullptr) {
         continue;
       }
-      net = network_->highestConnectedNet(mutableNet(net));
+      net = network_->highestConnectedNet(const_cast<Net*>(net));
       if (net == nullptr || network_->isPower(net) || network_->isGround(net)) {
         continue;
       }
@@ -327,7 +807,7 @@ std::vector<const Net*> RecoverPowerMore::slewCheckNetCone(
           if (out_net == nullptr) {
             continue;
           }
-          out_net = network_->highestConnectedNet(mutableNet(out_net));
+          out_net = network_->highestConnectedNet(const_cast<Net*>(out_net));
           if (out_net == nullptr || network_->isPower(out_net)
               || network_->isGround(out_net)) {
             continue;
@@ -354,8 +834,8 @@ size_t RecoverPowerMore::countSlewViolations(
   size_t count = 0;
   for (const Net* net : nets) {
     if (net != nullptr) {
-      count
-          += sta_->checkSlewLimits(mutableNet(net), true, nullptr, max_).size();
+      count += sta_->checkSlewLimits(const_cast<Net*>(net), true, nullptr, max_)
+                   .size();
     }
   }
   return count;
@@ -367,9 +847,9 @@ size_t RecoverPowerMore::countCapViolations(
   size_t count = 0;
   for (const Net* net : nets) {
     if (net != nullptr) {
-      count
-          += sta_->checkCapacitanceLimits(mutableNet(net), true, nullptr, max_)
-                 .size();
+      count += sta_->checkCapacitanceLimits(
+                       const_cast<Net*>(net), true, nullptr, max_)
+                   .size();
     }
   }
   return count;
@@ -381,7 +861,8 @@ size_t RecoverPowerMore::countFanoutViolations(
   size_t count = 0;
   for (const Net* net : nets) {
     if (net != nullptr) {
-      count += sta_->checkFanoutLimits(mutableNet(net), true, max_).size();
+      count
+          += sta_->checkFanoutLimits(const_cast<Net*>(net), true, max_).size();
     }
   }
   return count;
@@ -475,11 +956,13 @@ Slack RecoverPowerMore::instanceWorstSlack(sta::Instance* inst) const
     }
 
     const Slack slack = sta_->vertexSlack(vertex, max_);
-    worst_slack = std::min(worst_slack, slack);
+    if (slack < worst_slack) {
+      worst_slack = slack;
+    }
     found = true;
   }
 
-  return found ? worst_slack : std::numeric_limits<Slack>::infinity();
+  return found ? worst_slack : -std::numeric_limits<Slack>::infinity();
 }
 
 bool RecoverPowerMore::instanceDrivesClock(sta::Instance* inst) const
@@ -500,7 +983,7 @@ bool RecoverPowerMore::instanceDrivesClock(sta::Instance* inst) const
 
 float RecoverPowerMore::minClockPeriod() const
 {
-  auto* clocks = sdc_->clocks();
+  sta::ClockSeq* clocks = sdc_->clocks();
   if (clocks == nullptr || clocks->empty()) {
     return 0.0f;
   }
@@ -626,21 +1109,29 @@ std::vector<LibertyCell*> RecoverPowerMore::nextSmallerCells(
 
   // Prefer weaker (higher resistance) and lower leakage candidates first;
   // the full STA check will decide which are actually acceptable.
-  std::ranges::stable_sort(candidates, [this](LibertyCell* a, LibertyCell* b) {
-    float ra = std::max(0.0f, resizer_->cellDriveResistance(a));
-    float rb = std::max(0.0f, resizer_->cellDriveResistance(b));
-    const float la = resizer_->cellLeakage(a).value_or(
-        std::numeric_limits<float>::infinity());
-    const float lb = resizer_->cellLeakage(b).value_or(
-        std::numeric_limits<float>::infinity());
-    if (ra != rb) {
-      return ra > rb;
-    }
-    if (la != lb) {
-      return la < lb;
-    }
-    return std::strcmp(a->name(), b->name()) < 0;
-  });
+  std::stable_sort(candidates.begin(),
+                   candidates.end(),
+                   [this](LibertyCell* a, LibertyCell* b) {
+                     float ra = resizer_->cellDriveResistance(a);
+                     float rb = resizer_->cellDriveResistance(b);
+                     if (ra <= 0.0f) {
+                       ra = 0.0f;
+                     }
+                     if (rb <= 0.0f) {
+                       rb = 0.0f;
+                     }
+                     const float la = resizer_->cellLeakage(a).value_or(
+                         std::numeric_limits<float>::infinity());
+                     const float lb = resizer_->cellLeakage(b).value_or(
+                         std::numeric_limits<float>::infinity());
+                     if (ra != rb) {
+                       return ra > rb;
+                     }
+                     if (la != lb) {
+                       return la < lb;
+                     }
+                     return std::strcmp(a->name(), b->name()) < 0;
+                   });
 
   return candidates;
 }
@@ -751,7 +1242,7 @@ bool RecoverPowerMore::trySwapCell(sta::Instance* inst,
     if (verbose) {
       debugPrint(logger_,
                  RSZ,
-                 "recover_power_more",
+                 "recover_power",
                  2,
                  "REJECT swap {} {} -> {} (inst_slack={} wns={} floor={})",
                  network_->pathName(inst),
@@ -769,7 +1260,7 @@ bool RecoverPowerMore::trySwapCell(sta::Instance* inst,
   if (verbose) {
     debugPrint(logger_,
                RSZ,
-               "recover_power_more",
+               "recover_power",
                2,
                "ACCEPT swap {} {} -> {} (inst_slack={} wns={})",
                network_->pathName(inst),
@@ -777,6 +1268,11 @@ bool RecoverPowerMore::trySwapCell(sta::Instance* inst,
                replacement->name(),
                delayAsString(inst_slack_after, sta_, kDigits),
                delayAsString(wns_after, sta_, kDigits));
+  }
+
+  if (record_actions_) {
+    action_history_.push_back(
+        {ActionType::kSwap, network_->pathName(inst), curr_cell, replacement});
   }
 
   resizer_->journalEnd();
@@ -813,10 +1309,10 @@ bool RecoverPowerMore::tryRemoveBuffer(sta::Instance* inst,
     const Net* out_net
         = (out_pin != nullptr) ? network_->net(out_pin) : nullptr;
     if (in_net != nullptr) {
-      in_net = network_->highestConnectedNet(mutableNet(in_net));
+      in_net = network_->highestConnectedNet(const_cast<Net*>(in_net));
     }
     if (out_net != nullptr) {
-      out_net = network_->highestConnectedNet(mutableNet(out_net));
+      out_net = network_->highestConnectedNet(const_cast<Net*>(out_net));
     }
     // Mirror UnbufferMove::removeBuffer() survivor selection to avoid
     // dereferencing a net that is destroyed by mergeNet().
@@ -892,7 +1388,7 @@ bool RecoverPowerMore::tryRemoveBuffer(sta::Instance* inst,
     if (verbose) {
       debugPrint(logger_,
                  RSZ,
-                 "recover_power_more",
+                 "recover_power",
                  2,
                  "REJECT remove_buffer {} ({}) (wns={} floor={} hold={})",
                  inst_name,
@@ -909,7 +1405,7 @@ bool RecoverPowerMore::tryRemoveBuffer(sta::Instance* inst,
   if (verbose) {
     debugPrint(logger_,
                RSZ,
-               "recover_power_more",
+               "recover_power",
                2,
                "ACCEPT remove_buffer {} ({}) (wns={} hold={})",
                inst_name,
@@ -948,7 +1444,7 @@ bool RecoverPowerMore::optimizeInstance(sta::Instance* inst,
 
   // Buffer removal can provide a large power reduction when the buffer is
   // redundant. Avoid clock networks where the buffer structure is deliberate.
-  if (curr_cell->isBuffer() && !drives_clock) {
+  if (!disable_buffer_removals_ && curr_cell->isBuffer() && !drives_clock) {
     if (tryRemoveBuffer(inst,
                         wns_floor,
                         hold_floor,
@@ -1040,7 +1536,7 @@ bool RecoverPowerMore::meetsSizeCriteria(const LibertyCell* cell,
 int RecoverPowerMore::fanout(Vertex* vertex) const
 {
   int fanout = 0;
-  sta::VertexOutEdgeIterator edge_iter(vertex, graph_);
+  VertexOutEdgeIterator edge_iter(vertex, graph_);
   while (edge_iter.hasNext()) {
     edge_iter.next();
     fanout++;

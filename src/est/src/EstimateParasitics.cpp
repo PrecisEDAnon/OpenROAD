@@ -451,7 +451,9 @@ void EstimateParasitics::updateParasitics(bool save_guides)
     case ParasiticsSrc::global_routing:
     case ParasiticsSrc::detailed_routing: {
       // TODO: update detailed route for modified nets
-      incr_groute_->updateRoutes(save_guides);
+      if (incremental_route_updates_enabled_ && incr_groute_ != nullptr) {
+        incr_groute_->updateRoutes(save_guides);
+      }
       for (const sta::Net* net : parasitics_invalid_) {
         debugPrint(logger_,
                    EST,
@@ -518,7 +520,9 @@ void EstimateParasitics::ensureWireParasitic(const sta::Pin* drvr_pin,
         parasitics_invalid_.erase(net);
         break;
       case ParasiticsSrc::global_routing: {
-        incr_groute_->updateRoutes();
+        if (incremental_route_updates_enabled_ && incr_groute_ != nullptr) {
+          incr_groute_->updateRoutes();
+        }
         estimateGlobalRouteRC(db_network_->staToDb(net));
         parasitics_invalid_.erase(net);
         break;

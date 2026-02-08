@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <string>
 #include <vector>
 
 #include "db_sta/dbSta.hh"
@@ -54,7 +56,42 @@ class RecoverPowerMore : public sta::dbStaState
     bool drives_clock = false;
   };
 
+  enum class ActionType
+  {
+    kSwap,
+    kRemoveBuffer
+  };
+
+  struct ActionRecord
+  {
+    ActionType type = ActionType::kSwap;
+    std::string inst_name;
+    LibertyCell* prev_cell = nullptr;
+    LibertyCell* new_cell = nullptr;
+  };
+
+  struct PdpMetrics
+  {
+    float power_total = -1.0f;
+    float clock_period = 0.0f;
+    Slack wns = 0.0;
+    float effective_period = std::numeric_limits<float>::infinity();
+    float pdp = std::numeric_limits<float>::infinity();
+  };
+
   void init();
+  bool recoverPower0db856(float recover_power_percent, bool verbose);
+  bool recoverPower7bc521(float recover_power_percent,
+                          bool verbose,
+                          std::vector<ActionRecord>& actions);
+
+  void applyActions(const std::vector<ActionRecord>& actions, bool verbose);
+  void undoActions(const std::vector<ActionRecord>& actions, bool verbose);
+  PdpMetrics measurePdp() const;
+  float pdpFromPowerSlack(float power_total,
+                          Slack wns,
+                          float clock_period) const;
+
   std::vector<CandidateInstance> collectCandidates(
       Slack current_setup_wns) const;
   Slack instanceWorstSlack(sta::Instance* inst) const;
@@ -114,8 +151,8 @@ class RecoverPowerMore : public sta::dbStaState
 
   Logger* logger_ = nullptr;
   dbNetwork* db_network_ = nullptr;
-  Resizer* resizer_ = nullptr;
-  est::EstimateParasitics* estimate_parasitics_ = nullptr;
+  Resizer* resizer_;
+  est::EstimateParasitics* estimate_parasitics_;
   const Corner* corner_ = nullptr;
   int resize_count_ = 0;
   const MinMax* max_ = MinMax::max();
@@ -154,6 +191,11 @@ class RecoverPowerMore : public sta::dbStaState
   Slack wns_floor_ = 0.0;
   Slack hold_floor_ = 0.0;
   int buffer_remove_count_ = 0;
+
+  // Used by 0db856-lite to allow undoing speculative actions.
+  bool record_actions_ = false;
+  bool disable_buffer_removals_ = false;
+  std::vector<ActionRecord> action_history_;
 };
 
 }  // namespace rsz
