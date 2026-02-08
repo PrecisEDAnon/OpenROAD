@@ -221,6 +221,13 @@ class GlobalRouter
   // See class IncrementalGRoute.
   void addDirtyNet(odb::dbNet* net);
   std::set<odb::dbNet*> getDirtyNets() { return dirty_nets_; }
+  // Enable/disable handling of db callbacks used for incremental routing.
+  // Disabling callbacks prevents speculative ECOs from marking nets dirty.
+  void setIncrementalDbCallbacksEnabled(bool enabled);
+  bool incrementalDbCallbacksEnabled() const
+  {
+    return incremental_db_cbk_enabled_;
+  }
   // check_antennas
   bool haveRoutes();
   bool haveDbGuides();
@@ -514,6 +521,7 @@ class GlobalRouter
 
   // Flow variables
   bool is_incremental_;
+  bool incremental_db_cbk_enabled_{true};
   float adjustment_;
   int congestion_iterations_{50};
   int congestion_report_iter_step_;
