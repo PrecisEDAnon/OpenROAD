@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "RecoverPower.hh"
 #include "db_sta/dbSta.hh"
 #include "est/EstimateParasitics.h"
 #include "odb/db.h"
@@ -84,14 +85,6 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     return false;
   }
 
-  // 0db856-lite:
-  // For full power recovery (recover_power_percent ~= 1.0), run both:
-  //   - a 7bc521-style recover_power baseline
-  //   - the 0db856-style recover_power
-  // and keep whichever yields lower PDP (= power_total * effective_period).
-  //
-  // This makes 0db856 "soft": it should not regress vs the baseline engine on
-  // circuits where it hurts PDP.
   const bool lite_mode = recover_power_percent >= 0.999f;
   if (lite_mode) {
     // Ensure clock network exists for sta_->isClock().
@@ -100,31 +93,42 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     const float clock_period = minClockPeriod();
     const Corner* corner = selectPowerCorner();
     if (!(clock_period > 0.0f) || corner == nullptr) {
-      // Can't compute PDP; fall back to the native implementation.
-      record_actions_ = false;
-      disable_buffer_removals_ = false;
-      action_history_.clear();
-      return recoverPower0db856(recover_power_percent, verbose);
+      // Can't compute PDP; fall back to the default RecoverPower engine.
+      RecoverPower native(resizer_);
+      return native.recoverPower(recover_power_percent, verbose);
     }
     corner_ = corner;
 
+    // 0db856-lite for upstream OpenROAD:
+    //
+    // Run the default RecoverPower engine first (baseline). Then, as a
+    // speculative trial, run the 0db856-style recover_power implementation and
+    // keep it only if it improves PDP (= power_total * effective_period)
+    // relative to the baseline.
+    //
+    // During the speculative trial, suppress incremental routing/parasitics
+    // updates driven by db callbacks so that rollback is deterministic and
+    // leaves the baseline state intact.
+
+    RecoverPower native(resizer_);
+    const bool native_changed
+        = native.recoverPower(recover_power_percent, /*verbose*/ false);
+
     // Enable incremental parasitics for the entire speculative evaluation.
-    // recoverPower0db856()/recoverPower7bc521() each create their own guards,
-    // but this wrapper also calls updateParasitics() between trials.
+    // recoverPower0db856() creates its own guard, but this wrapper also calls
+    // updateParasitics() between trials.
     est::IncrementalParasiticsGuard guard(estimate_parasitics_);
 
     const bool prev_incr_route_updates
         = estimate_parasitics_->isIncrementalRouteUpdatesEnabled();
-    // Disable incremental route updates during speculative evaluation so that
-    // rolling back swaps does not perturb global-routing/parasitics state.
-    estimate_parasitics_->setIncrementalRouteUpdatesEnabled(false);
+    grt::GlobalRouter* grouter = estimate_parasitics_->getGlobalRouter();
+    const bool prev_grt_db_cbk_enabled
+        = grouter != nullptr ? grouter->incrementalDbCallbacksEnabled() : true;
 
-    // 1) Baseline (7bc521-like) trial run.
-    record_actions_ = false;
-    disable_buffer_removals_ = true;
-    std::vector<ActionRecord> baseline_actions;
-    const bool baseline_changed = recoverPower7bc521(
-        recover_power_percent, /*verbose*/ false, baseline_actions);
+    estimate_parasitics_->setIncrementalRouteUpdatesEnabled(false);
+    if (grouter != nullptr) {
+      grouter->setIncrementalDbCallbacksEnabled(false);
+    }
 
     estimate_parasitics_->updateParasitics(false);
     sta_->delaysInvalid();
@@ -132,15 +136,7 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     sta_->findRequireds();
     const PdpMetrics baseline = measurePdp();
 
-    // Restore entry state before running 0db856.
-    undoActions(baseline_actions, /*verbose*/ false);
-
-    estimate_parasitics_->updateParasitics(false);
-    sta_->delaysInvalid();
-    sta_->updateTiming(true);
-    sta_->findRequireds();
-
-    // 2) 0db856 trial run.
+    // 0db856 trial run (speculative).
     record_actions_ = true;
     disable_buffer_removals_ = true;
     action_history_.clear();
@@ -153,46 +149,52 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     sta_->findRequireds();
     const PdpMetrics cand = measurePdp();
 
-    constexpr float kPdpImproveEpsFrac = 1e-6f;
+    // Improvements measured at the end of recover_power do not always carry
+    // through to finish due to downstream routing/parasitics differences.
+    // Require a modest improvement margin to avoid enabling 0db856 on
+    // near-ties that can flip at finish.
+    constexpr float kPdpImproveMinFrac = 0.01f;
     const bool baseline_valid = std::isfinite(baseline.pdp);
     const bool cand_valid = std::isfinite(cand.pdp);
     const bool choose_cand
         = (baseline_valid && cand_valid)
-              ? (cand.pdp < baseline.pdp * (1.0f - kPdpImproveEpsFrac))
+              ? (cand.pdp < baseline.pdp * (1.0f - kPdpImproveMinFrac))
               : (cand_valid && !baseline_valid);
+
+    // Restore baseline state before finalizing and re-enable callbacks so the
+    // chosen winner matches the default flow behavior.
+    undoActions(action_history_, /*verbose*/ false);
+    record_actions_ = false;
+    disable_buffer_removals_ = false;
+
+    estimate_parasitics_->setIncrementalRouteUpdatesEnabled(
+        prev_incr_route_updates);
+    if (grouter != nullptr) {
+      grouter->setIncrementalDbCallbacksEnabled(prev_grt_db_cbk_enabled);
+    }
 
     if (choose_cand) {
       logger_->info(RSZ,
-                    173,
+                    175,
                     "recover_power lite: keep 0db856 (PDP {:.6g}, WNS {}), "
                     "baseline PDP {:.6g}",
                     cand.pdp,
                     delayAsString(cand.wns, sta_, kDigits),
                     baseline.pdp);
-    } else {
-      logger_->info(RSZ,
-                    174,
-                    "recover_power lite: revert to baseline (PDP {:.6g}, WNS "
-                    "{}), 0db856 PDP {:.6g}",
-                    baseline.pdp,
-                    delayAsString(baseline.wns, sta_, kDigits),
-                    cand.pdp);
-      // Restore entry state and re-apply the baseline actions.
-      undoActions(action_history_, verbose);
+      applyActions(action_history_, /*verbose*/ false);
       action_history_.clear();
-      applyActions(baseline_actions, /*verbose*/ false);
+      return native_changed || cand_changed;
     }
 
-    record_actions_ = false;
-    disable_buffer_removals_ = false;
-    estimate_parasitics_->setIncrementalRouteUpdatesEnabled(
-        prev_incr_route_updates);
-    if (prev_incr_route_updates) {
-      estimate_parasitics_->updateParasitics(true);
-      sta_->findRequireds();
-    }
-
-    return choose_cand ? cand_changed : baseline_changed;
+    logger_->info(RSZ,
+                  176,
+                  "recover_power lite: keep baseline (PDP {:.6g}, WNS {}), "
+                  "0db856 PDP {:.6g}",
+                  baseline.pdp,
+                  delayAsString(baseline.wns, sta_, kDigits),
+                  cand.pdp);
+    action_history_.clear();
+    return native_changed;
   }
 
   record_actions_ = false;
