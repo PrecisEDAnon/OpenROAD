@@ -5,39 +5,36 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
+#include "est/EstimateParasitics.h"
 #include "odb/db.h"
 #include "rsz/Resizer.hh"
 #include "sta/Clock.hh"
 #include "sta/Corner.hh"
-#include "sta/DcalcAnalysisPt.hh"
 #include "sta/Delay.hh"
-#include "sta/Fuzzy.hh"
 #include "sta/Graph.hh"
 #include "sta/GraphDelayCalc.hh"
-#include "sta/InputDrive.hh"
 #include "sta/Liberty.hh"
+#include "sta/LibertyClass.hh"
 #include "sta/Network.hh"
 #include "sta/NetworkClass.hh"
-#include "sta/Parasitics.hh"
+#include "sta/Path.hh"
 #include "sta/PathExpanded.hh"
-#include "sta/PortDirection.hh"
 #include "sta/PowerClass.hh"
 #include "sta/Sdc.hh"
-#include "sta/Search.hh"
-#include "sta/TimingArc.hh"
-#include "sta/Units.hh"
+#include "sta/SdcClass.hh"
 #include "sta/Vector.hh"
 #include "utl/Logger.h"
 
@@ -263,8 +260,7 @@ void RecoverPowerMore::undoActions(const std::vector<ActionRecord>& actions,
                                    const bool verbose)
 {
   (void) verbose;
-  for (auto it = actions.rbegin(); it != actions.rend(); ++it) {
-    const ActionRecord& action = *it;
+  for (const auto& action : std::views::reverse(actions)) {
     if (action.type == ActionType::kSwap && action.prev_cell != nullptr) {
       sta::Instance* inst = network_->findInstance(action.inst_name.c_str());
       if (inst != nullptr) {
@@ -354,10 +350,8 @@ bool RecoverPowerMore::recoverPower0db856(const float recover_power_percent,
     // Rank by "power × available headroom" so we focus effort on high-power,
     // non-critical instances. Then break ties by power/headroom/area.
     std::vector<CandidateInstance> sorted = candidates;
-    std::sort(
-        sorted.begin(),
-        sorted.end(),
-        [](const CandidateInstance& a, const CandidateInstance& b) {
+    std::ranges::sort(
+        sorted, [](const CandidateInstance& a, const CandidateInstance& b) {
           const float a_score
               = a.power * static_cast<float>(std::max<Slack>(0.0, a.headroom));
           const float b_score
@@ -474,11 +468,9 @@ bool RecoverPowerMore::recoverPower7bc521(const float recover_power_percent,
     }
   }
 
-  std::sort(ends_with_slack.begin(),
-            ends_with_slack.end(),
-            [this](Vertex* a, Vertex* b) {
-              return sta_->vertexSlack(a, max_) > sta_->vertexSlack(b, max_);
-            });
+  std::ranges::sort(ends_with_slack, [this](Vertex* a, Vertex* b) {
+    return sta_->vertexSlack(a, max_) > sta_->vertexSlack(b, max_);
+  });
 
   int max_end_count
       = static_cast<int>(ends_with_slack.size() * recover_power_percent);
@@ -534,12 +526,10 @@ bool RecoverPowerMore::recoverPower7bc521(const float recover_power_percent,
         }
       }
 
-      std::sort(load_delays.begin(),
-                load_delays.end(),
-                [](const auto& lhs, const auto& rhs) {
-                  return lhs.second > rhs.second
-                         || (lhs.second == rhs.second && lhs.first < rhs.first);
-                });
+      std::ranges::sort(load_delays, [](const auto& lhs, const auto& rhs) {
+        return lhs.second > rhs.second
+               || (lhs.second == rhs.second && lhs.first < rhs.first);
+      });
 
       for (const auto& [drvr_index, ignored] : load_delays) {
         (void) ignored;
@@ -654,7 +644,7 @@ bool RecoverPowerMore::recoverPower7bc521(const float recover_power_percent,
 
         action.type = ActionType::kSwap;
         action.inst_name = network_->pathName(drvr);
-        action.prev_cell = const_cast<LibertyCell*>(curr_cell);
+        action.prev_cell = curr_cell;
         action.new_cell = best_cell;
         if (resizer_->replaceCell(drvr, best_cell, /* journal */ true)) {
           changed_vertex = drvr_vertex;
@@ -956,9 +946,7 @@ Slack RecoverPowerMore::instanceWorstSlack(sta::Instance* inst) const
     }
 
     const Slack slack = sta_->vertexSlack(vertex, max_);
-    if (slack < worst_slack) {
-      worst_slack = slack;
-    }
+    worst_slack = std::min(worst_slack, slack);
     found = true;
   }
 
@@ -1109,29 +1097,23 @@ std::vector<LibertyCell*> RecoverPowerMore::nextSmallerCells(
 
   // Prefer weaker (higher resistance) and lower leakage candidates first;
   // the full STA check will decide which are actually acceptable.
-  std::stable_sort(candidates.begin(),
-                   candidates.end(),
-                   [this](LibertyCell* a, LibertyCell* b) {
-                     float ra = resizer_->cellDriveResistance(a);
-                     float rb = resizer_->cellDriveResistance(b);
-                     if (ra <= 0.0f) {
-                       ra = 0.0f;
-                     }
-                     if (rb <= 0.0f) {
-                       rb = 0.0f;
-                     }
-                     const float la = resizer_->cellLeakage(a).value_or(
-                         std::numeric_limits<float>::infinity());
-                     const float lb = resizer_->cellLeakage(b).value_or(
-                         std::numeric_limits<float>::infinity());
-                     if (ra != rb) {
-                       return ra > rb;
-                     }
-                     if (la != lb) {
-                       return la < lb;
-                     }
-                     return std::strcmp(a->name(), b->name()) < 0;
-                   });
+  std::ranges::stable_sort(candidates, [this](LibertyCell* a, LibertyCell* b) {
+    float ra = resizer_->cellDriveResistance(a);
+    float rb = resizer_->cellDriveResistance(b);
+    ra = std::max(ra, 0.0f);
+    rb = std::max(rb, 0.0f);
+    const float la = resizer_->cellLeakage(a).value_or(
+        std::numeric_limits<float>::infinity());
+    const float lb = resizer_->cellLeakage(b).value_or(
+        std::numeric_limits<float>::infinity());
+    if (ra != rb) {
+      return ra > rb;
+    }
+    if (la != lb) {
+      return la < lb;
+    }
+    return std::strcmp(a->name(), b->name()) < 0;
+  });
 
   return candidates;
 }
