@@ -64,6 +64,17 @@ namespace {
 
 constexpr int kDigits = 3;
 constexpr float kDefaultIsoEcpBudgetPct = 3.0f;
+// Recover_power runs at global route. Later routing/parasitics stages can
+// amplify timing loss, so spend only a portion of the user's ECP budget at
+// recover_power-time and reserve headroom for downstream stages.
+constexpr float kIsoEcpBudgetStaScale = 0.60f;
+// Additional conservatism when baseline timing is already failing.
+constexpr float kIsoEcpBudgetStaScaleFailing = 0.50f;
+// If baseline is failing badly (WNS/period below this), disable ISO-ECP
+// candidate selection entirely to avoid large finish regressions.
+constexpr float kIsoEcpDisableSlackRatio = -0.03f;
+// Scale the candidate search effort with the spent budget.
+constexpr float kIsoEcpMinCandidateRecoverFrac = 0.10f;
 
 }  // namespace
 
@@ -164,20 +175,61 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
         = (baseline.clock_period > 0.0f) && std::isfinite(baseline.wns)
           && std::isfinite(baseline.effective_period)
           && (baseline.effective_period > 0.0f);
+    bool skip_iso_candidate = false;
+    float sta_budget_frac = ecp_budget_frac;
     if (baseline_eff_valid) {
+      float scale = kIsoEcpBudgetStaScale;
+      const float slack_ratio
+          = static_cast<float>(baseline.wns) / baseline.clock_period;
+      if (slack_ratio < 0.0f) {
+        if (slack_ratio < kIsoEcpDisableSlackRatio) {
+          skip_iso_candidate = true;
+          scale = 0.0f;
+        } else {
+          scale *= kIsoEcpBudgetStaScaleFailing;
+        }
+      }
+      sta_budget_frac = std::clamp(ecp_budget_frac * scale, 0.0f, ecp_budget_frac);
+
       const float eff_limit
-          = baseline.effective_period * (1.0f + ecp_budget_frac);
+          = baseline.effective_period * (1.0f + sta_budget_frac);
       const Slack wns_floor
           = static_cast<Slack>(baseline.clock_period - eff_limit);
       wns_floor_override_ = wns_floor;
+    }
+
+    if (skip_iso_candidate) {
+      logger_->info(
+          RSZ,
+          177,
+          "recover_power lite: keep baseline (ISO-ECP disabled; baseline power "
+          "{:.6g}, WNS {})",
+          baseline.power_total,
+          delayAsString(baseline.wns, sta_, kDigits));
+
+      estimate_parasitics_->setIncrementalRouteUpdatesEnabled(
+          prev_incr_route_updates);
+      if (grouter != nullptr) {
+        grouter->setIncrementalDbCallbacksEnabled(prev_grt_db_cbk_enabled);
+      }
+      return native_changed;
     }
 
     // 0db856 trial run (speculative).
     record_actions_ = true;
     disable_buffer_removals_ = true;
     action_history_.clear();
+    const float cand_recover_power_percent = [&]() {
+      if (ecp_budget_frac <= 0.0f) {
+        return recover_power_percent;
+      }
+      const float ratio = sta_budget_frac / ecp_budget_frac;
+      const float frac
+          = std::clamp(ratio, kIsoEcpMinCandidateRecoverFrac, 1.0f);
+      return recover_power_percent * frac;
+    }();
     const bool cand_changed
-        = recoverPower0db856(recover_power_percent, verbose);
+        = recoverPower0db856(cand_recover_power_percent, verbose);
 
     estimate_parasitics_->updateParasitics(false);
     sta_->delaysInvalid();
