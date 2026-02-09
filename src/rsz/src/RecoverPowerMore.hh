@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -196,6 +197,8 @@ class RecoverPowerMore : public sta::dbStaState
   bool record_actions_ = false;
   bool disable_buffer_removals_ = false;
   std::vector<ActionRecord> action_history_;
+
+  std::optional<Slack> wns_floor_override_;
 };
 
 }  // namespace rsz
