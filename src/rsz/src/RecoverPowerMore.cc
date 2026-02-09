@@ -196,10 +196,6 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
           scale = 0.0f;
         }
       }
-      if (!skip_iso_candidate && slack_ratio < 0.0f && ecp_budget_pct <= 1.0f) {
-        skip_iso_candidate = true;
-        scale = 0.0f;
-      }
       if (!skip_iso_candidate && slack_ratio < 0.0f) {
         if (slack_ratio < kIsoEcpDisableSlackRatio) {
           skip_iso_candidate = true;
