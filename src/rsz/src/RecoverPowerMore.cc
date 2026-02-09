@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -61,6 +62,7 @@ using sta::VertexOutEdgeIterator;
 namespace {
 
 constexpr int kDigits = 3;
+constexpr float kDefaultIsoEcpBudgetPct = 1.0f;
 
 }  // namespace
 
@@ -80,6 +82,7 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
                                     bool verbose)
 {
   init();
+  wns_floor_override_.reset();
 
   if (recover_power_percent <= 0.0f) {
     return false;
@@ -136,6 +139,38 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     sta_->findRequireds();
     const PdpMetrics baseline = measurePdp();
 
+    // ISO-ECP budget: constrain effective period (ECP) increase relative to
+    // the baseline and optimize for lower power within that budget.
+    //
+    // The budget is specified as a percent of the baseline effective period
+    // (default is branch-specific). This provides "tapering": as the design
+    // approaches the slack floor, further swaps are rejected.
+    const float ecp_budget_pct = [&]() {
+      const char* env = std::getenv("MORE_RECOVER_POWER_ECP_BUDGET_PCT");
+      if (env == nullptr || env[0] == '\0') {
+        return kDefaultIsoEcpBudgetPct;
+      }
+      char* end = nullptr;
+      const double val = std::strtod(env, &end);
+      if (end == env || !std::isfinite(val)) {
+        return kDefaultIsoEcpBudgetPct;
+      }
+      return static_cast<float>(val);
+    }();
+    const float ecp_budget_frac
+        = std::clamp(ecp_budget_pct / 100.0f, 0.0f, 1.0f);
+    const bool baseline_eff_valid
+        = (baseline.clock_period > 0.0f) && std::isfinite(baseline.wns)
+          && std::isfinite(baseline.effective_period)
+          && (baseline.effective_period > 0.0f);
+    if (baseline_eff_valid) {
+      const float eff_limit
+          = baseline.effective_period * (1.0f + ecp_budget_frac);
+      const Slack wns_floor
+          = static_cast<Slack>(baseline.clock_period - eff_limit);
+      wns_floor_override_ = wns_floor;
+    }
+
     // 0db856 trial run (speculative).
     record_actions_ = true;
     disable_buffer_removals_ = true;
@@ -153,19 +188,36 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     // through to finish due to downstream routing/parasitics differences.
     // Require a modest improvement margin to avoid enabling 0db856 on
     // near-ties that can flip at finish.
-    constexpr float kPdpImproveMinFrac = 0.01f;
-    const bool baseline_valid = std::isfinite(baseline.pdp);
-    const bool cand_valid = std::isfinite(cand.pdp);
-    const bool choose_cand
-        = (baseline_valid && cand_valid)
-              ? (cand.pdp < baseline.pdp * (1.0f - kPdpImproveMinFrac))
-              : (cand_valid && !baseline_valid);
+    constexpr float kPowerImproveEpsFrac = 1e-6f;
+    const bool baseline_power_valid
+        = (baseline.power_total >= 0.0f) && std::isfinite(baseline.power_total);
+    const bool cand_power_valid
+        = (cand.power_total >= 0.0f) && std::isfinite(cand.power_total);
+    const bool cand_improves_power
+        = (baseline_power_valid && cand_power_valid)
+              ? (cand.power_total
+                 < baseline.power_total * (1.0f - kPowerImproveEpsFrac))
+              : (cand_power_valid && !baseline_power_valid);
+    const bool cand_eff_valid
+        = (cand.clock_period > 0.0f) && std::isfinite(cand.wns)
+          && std::isfinite(cand.effective_period) && (cand.effective_period > 0.0f);
+    const bool cand_within_ecp_budget = [&]() {
+      if (!(baseline_eff_valid && cand_eff_valid)) {
+        return false;
+      }
+      constexpr float kEcpBudgetEpsFrac = 1e-4f;
+      const float eff_limit
+          = baseline.effective_period * (1.0f + ecp_budget_frac + kEcpBudgetEpsFrac);
+      return cand.effective_period <= eff_limit;
+    }();
+    const bool choose_cand = cand_improves_power && cand_within_ecp_budget;
 
     // Restore baseline state before finalizing and re-enable callbacks so the
     // chosen winner matches the default flow behavior.
     undoActions(action_history_, /*verbose*/ false);
     record_actions_ = false;
     disable_buffer_removals_ = false;
+    wns_floor_override_.reset();
 
     estimate_parasitics_->setIncrementalRouteUpdatesEnabled(
         prev_incr_route_updates);
@@ -176,11 +228,11 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     if (choose_cand) {
       logger_->info(RSZ,
                     175,
-                    "recover_power lite: keep 0db856 (PDP {:.6g}, WNS {}), "
-                    "baseline PDP {:.6g}",
-                    cand.pdp,
+                    "recover_power lite: keep 0db856 (power {:.6g}, WNS {}), "
+                    "baseline power {:.6g}",
+                    cand.power_total,
                     delayAsString(cand.wns, sta_, kDigits),
-                    baseline.pdp);
+                    baseline.power_total);
       applyActions(action_history_, /*verbose*/ false);
       action_history_.clear();
       return native_changed || cand_changed;
@@ -188,11 +240,11 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
 
     logger_->info(RSZ,
                   176,
-                  "recover_power lite: keep baseline (PDP {:.6g}, WNS {}), "
-                  "0db856 PDP {:.6g}",
-                  baseline.pdp,
+                  "recover_power lite: keep baseline (power {:.6g}, WNS {}), "
+                  "0db856 power {:.6g}",
+                  baseline.power_total,
                   delayAsString(baseline.wns, sta_, kDigits),
-                  cand.pdp);
+                  cand.power_total);
     action_history_.clear();
     return native_changed;
   }
@@ -311,8 +363,10 @@ bool RecoverPowerMore::recoverPower0db856(const float recover_power_percent,
   // Keep timing closed if it is closed (WNS >= 0), otherwise do not worsen
   // the current worst slack by default. For already-failing designs, allow a
   // small WNS degradation budget to trade performance for power.
-  const Slack wns_floor
-      = computeWnsFloor(worst_slack_before, recover_power_percent);
+  const Slack wns_floor = wns_floor_override_.has_value()
+                              ? *wns_floor_override_
+                              : computeWnsFloor(worst_slack_before,
+                                                recover_power_percent);
   wns_floor_ = wns_floor;
   const Slack hold_floor = (worst_hold_before >= 0.0) ? 0.0 : worst_hold_before;
   hold_floor_ = hold_floor;
