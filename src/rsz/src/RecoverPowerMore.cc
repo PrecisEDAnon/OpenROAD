@@ -69,10 +69,14 @@ constexpr float kDefaultIsoEcpBudgetPct = 5.0f;
 // recover_power-time and reserve headroom for downstream stages.
 constexpr float kIsoEcpBudgetStaScale = 0.60f;
 // Additional conservatism when baseline timing is already failing.
-constexpr float kIsoEcpBudgetStaScaleFailing = 0.50f;
+constexpr float kIsoEcpBudgetStaScaleFailing = 0.40f;
 // If baseline is failing badly (WNS/period below this), disable ISO-ECP
 // candidate selection entirely to avoid large finish regressions.
 constexpr float kIsoEcpDisableSlackRatio = -0.03f;
+// For small ECP budgets, designs with very small positive slack are fragile:
+// routing/parasitics changes can turn tiny margins into large finish losses.
+// Require a minimum slack/period ratio that scales inversely with the budget.
+constexpr float kIsoEcpMinPosSlackRatioAt1pct = 0.002f;
 // Scale the candidate search effort with the spent budget.
 constexpr float kIsoEcpMinCandidateRecoverFrac = 0.10f;
 
@@ -181,6 +185,14 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
       float scale = kIsoEcpBudgetStaScale;
       const float slack_ratio
           = static_cast<float>(baseline.wns) / baseline.clock_period;
+      if (slack_ratio > 0.0f) {
+        const float budget_pct = std::max(ecp_budget_pct, 1e-3f);
+        const float min_ratio = kIsoEcpMinPosSlackRatioAt1pct / budget_pct;
+        if (slack_ratio < min_ratio) {
+          skip_iso_candidate = true;
+          scale = 0.0f;
+        }
+      }
       if (slack_ratio < 0.0f) {
         if (slack_ratio < kIsoEcpDisableSlackRatio) {
           skip_iso_candidate = true;
