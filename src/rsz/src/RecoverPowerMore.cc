@@ -183,6 +183,9 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     float sta_budget_frac = ecp_budget_frac;
     if (baseline_eff_valid) {
       float scale = kIsoEcpBudgetStaScale;
+      if (ecp_budget_pct <= 1.0f) {
+        scale = std::min(scale, 0.35f);
+      }
       const float slack_ratio
           = static_cast<float>(baseline.wns) / baseline.clock_period;
       if (slack_ratio > 0.0f) {
@@ -205,7 +208,8 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
           scale *= kIsoEcpBudgetStaScaleFailing;
         }
       }
-      sta_budget_frac = std::clamp(ecp_budget_frac * scale, 0.0f, ecp_budget_frac);
+      sta_budget_frac
+          = std::clamp(ecp_budget_frac * scale, 0.0f, ecp_budget_frac);
 
       const float eff_limit
           = baseline.effective_period * (1.0f + sta_budget_frac);
