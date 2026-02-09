@@ -67,7 +67,7 @@ constexpr float kDefaultIsoEcpBudgetPct = 1.0f;
 // Recover_power runs at global route. Later routing/parasitics stages can
 // amplify timing loss, so spend only a portion of the user's ECP budget at
 // recover_power-time and reserve headroom for downstream stages.
-constexpr float kIsoEcpBudgetStaScale = 0.60f;
+constexpr float kIsoEcpBudgetStaScale = 0.55f;
 // Additional conservatism when baseline timing is already failing.
 constexpr float kIsoEcpBudgetStaScaleFailing = 0.40f;
 // If baseline is failing badly (WNS/period below this), disable ISO-ECP
@@ -193,7 +193,11 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
           scale = 0.0f;
         }
       }
-      if (slack_ratio < 0.0f) {
+      if (!skip_iso_candidate && slack_ratio < 0.0f && ecp_budget_pct <= 1.0f) {
+        skip_iso_candidate = true;
+        scale = 0.0f;
+      }
+      if (!skip_iso_candidate && slack_ratio < 0.0f) {
         if (slack_ratio < kIsoEcpDisableSlackRatio) {
           skip_iso_candidate = true;
           scale = 0.0f;
