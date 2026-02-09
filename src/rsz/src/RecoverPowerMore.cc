@@ -20,6 +20,7 @@
 #include "RecoverPower.hh"
 #include "db_sta/dbSta.hh"
 #include "est/EstimateParasitics.h"
+#include "grt/GlobalRouter.h"
 #include "odb/db.h"
 #include "rsz/Resizer.hh"
 #include "sta/Clock.hh"
