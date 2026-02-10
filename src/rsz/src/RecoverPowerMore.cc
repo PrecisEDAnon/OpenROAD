@@ -5,8 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -175,10 +175,10 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
     }();
     const float ecp_budget_frac
         = std::clamp(ecp_budget_pct / 100.0f, 0.0f, 1.0f);
-    const bool baseline_eff_valid
-        = (baseline.clock_period > 0.0f) && std::isfinite(baseline.wns)
-          && std::isfinite(baseline.effective_period)
-          && (baseline.effective_period > 0.0f);
+    const bool baseline_eff_valid = (baseline.clock_period > 0.0f)
+                                    && std::isfinite(baseline.wns)
+                                    && std::isfinite(baseline.effective_period)
+                                    && (baseline.effective_period > 0.0f);
     bool skip_iso_candidate = false;
     float sta_budget_frac = ecp_budget_frac;
     if (baseline_eff_valid) {
@@ -267,16 +267,17 @@ bool RecoverPowerMore::recoverPower(const float recover_power_percent,
               ? (cand.power_total
                  < baseline.power_total * (1.0f - kPowerImproveEpsFrac))
               : (cand_power_valid && !baseline_power_valid);
-    const bool cand_eff_valid
-        = (cand.clock_period > 0.0f) && std::isfinite(cand.wns)
-          && std::isfinite(cand.effective_period) && (cand.effective_period > 0.0f);
+    const bool cand_eff_valid = (cand.clock_period > 0.0f)
+                                && std::isfinite(cand.wns)
+                                && std::isfinite(cand.effective_period)
+                                && (cand.effective_period > 0.0f);
     const bool cand_within_ecp_budget = [&]() {
       if (!(baseline_eff_valid && cand_eff_valid)) {
         return false;
       }
       constexpr float kEcpBudgetEpsFrac = 1e-4f;
-      const float eff_limit
-          = baseline.effective_period * (1.0f + ecp_budget_frac + kEcpBudgetEpsFrac);
+      const float eff_limit = baseline.effective_period
+                              * (1.0f + ecp_budget_frac + kEcpBudgetEpsFrac);
       return cand.effective_period <= eff_limit;
     }();
     const bool choose_cand = cand_improves_power && cand_within_ecp_budget;
@@ -432,10 +433,10 @@ bool RecoverPowerMore::recoverPower0db856(const float recover_power_percent,
   // Keep timing closed if it is closed (WNS >= 0), otherwise do not worsen
   // the current worst slack by default. For already-failing designs, allow a
   // small WNS degradation budget to trade performance for power.
-  const Slack wns_floor = wns_floor_override_.has_value()
-                              ? *wns_floor_override_
-                              : computeWnsFloor(worst_slack_before,
-                                                recover_power_percent);
+  const Slack wns_floor
+      = wns_floor_override_.has_value()
+            ? *wns_floor_override_
+            : computeWnsFloor(worst_slack_before, recover_power_percent);
   wns_floor_ = wns_floor;
   const Slack hold_floor = (worst_hold_before >= 0.0) ? 0.0 : worst_hold_before;
   hold_floor_ = hold_floor;
