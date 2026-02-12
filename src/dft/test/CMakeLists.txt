@@ -1,9 +1,10 @@
 or_integration_tests(
   "dft"
   TESTS
-    chain_count_infeasible_sky130
     max_chain_count_sky130
-    max_length_sweep_sky130
+    max_total_chain_count_sky130
+    exclude_shift_registers_nangate45
+    prefer_qbar_nangate45
     one_cell_sky130
     place_sort_sky130
     scan_architect_clock_mix_sky130
@@ -13,6 +14,7 @@ or_integration_tests(
     scandef_core_sky130
     scandef_sky130
     sub_modules_sky130
+    write_scandef_sky130
 )
 
 # Skipped

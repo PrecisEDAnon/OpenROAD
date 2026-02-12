@@ -20,7 +20,8 @@ odb::dbInst* ReplaceCell(
     odb::dbBlock* top_block,
     odb::dbInst* old_instance,
     odb::dbMaster* new_master,
-    const std::unordered_map<std::string, std::string>& port_mapping);
+    const std::unordered_map<std::string, std::string>& port_mapping,
+    utl::Logger* logger);
 
 // Returns true if the given instance cell's is a sequential cell, false
 // otherwise
@@ -35,7 +36,7 @@ std::optional<sta::Clock*> GetClock(sta::dbSta* sta, odb::dbITerm* iterm);
 
 // Checks if the given LibertyCell is really a Scan Cell with a Scan In and a
 // Scan Enable
-bool IsScanCell(const sta::LibertyCell* liberty_cell);
+bool IsScanCell(const sta::LibertyCell* libertyCell);
 
 // Convenience method to create a new port
 odb::dbBTerm* CreateNewPort(odb::dbBlock* block,

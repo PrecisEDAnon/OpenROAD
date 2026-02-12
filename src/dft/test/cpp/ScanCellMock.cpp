@@ -6,7 +6,6 @@
 #include <utility>
 
 #include "ClockDomain.hh"
-#include "ScanCell.hh"
 #include "odb/db.h"
 #include "odb/geom.h"
 #include "utl/Logger.h"
@@ -60,7 +59,7 @@ odb::Point ScanCellMock::getOrigin() const
 
 bool ScanCellMock::isPlaced() const
 {
-  return false;
+  return true;
 }
 
 }  // namespace test

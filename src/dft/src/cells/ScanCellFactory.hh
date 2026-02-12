@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ScanCell.hh"
+#include "ScanArchitectConfig.hh"
 #include "db_sta/dbSta.hh"
 #include "odb/db.h"
 #include "utl/Logger.h"
@@ -17,6 +18,7 @@ namespace dft {
 // collecting the ScanCells.
 std::vector<std::unique_ptr<ScanCell>> CollectScanCells(odb::dbDatabase* db,
                                                         sta::dbSta* sta,
+                                                        const ScanArchitectConfig& config,
                                                         utl::Logger* logger);
 
 }  // namespace dft

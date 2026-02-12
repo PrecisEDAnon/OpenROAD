@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "ScanArchitectConfig.hh"
 #include "Utils.hh"
 #include "db_sta/dbNetwork.hh"
 #include "odb/db.h"
@@ -22,11 +23,35 @@
 #include "sta/FuncExpr.hh"
 #include "sta/Liberty.hh"
 #include "sta/NetworkClass.hh"
+#include "sta/PortDirection.hh"
 #include "utl/Logger.h"
 
 namespace dft {
 
 namespace {
+bool IsLikelyScanPortName(const char* name)
+{
+  // Some libraries encode scan behavior via nextstate_type or the FF next_state
+  // equation, but OpenSTA may not surface scan metadata on the pins. Allow
+  // common scan-only pins to be treated as "extra" without blocking the
+  // non-scan -> scan mapping.
+  return strcasecmp(name, "SE") == 0 || strcasecmp(name, "SCE") == 0
+         || strcasecmp(name, "SCAN_EN") == 0
+         || strcasecmp(name, "SCAN_ENABLE") == 0
+         || strcasecmp(name, "SCANENABLE") == 0 || strcasecmp(name, "TE") == 0
+         || strcasecmp(name, "SI") == 0 || strcasecmp(name, "SD") == 0
+         || strcasecmp(name, "SCD") == 0 || strcasecmp(name, "SCAN_IN") == 0
+         || strcasecmp(name, "SCANIN") == 0 || strcasecmp(name, "SO") == 0
+         || strcasecmp(name, "SCO") == 0 || strcasecmp(name, "SCAN_OUT") == 0
+         || strcasecmp(name, "SCANOUT") == 0;
+}
+
+bool IsPgPort(const sta::LibertyPort* port)
+{
+  const sta::PortDirection* dir = port != nullptr ? port->direction() : nullptr;
+  return dir != nullptr && dir->isPowerGround();
+}
+
 // Checks the ports
 sta::LibertyPort* FindEquivalentPortInScanCell(
     const sta::LibertyPort* non_scan_cell_port,
@@ -35,7 +60,7 @@ sta::LibertyPort* FindEquivalentPortInScanCell(
   sta::LibertyCellPortIterator scan_cell_ports_iter(scan_cell);
   while (scan_cell_ports_iter.hasNext()) {
     sta::LibertyPort* scan_cell_port = scan_cell_ports_iter.next();
-    if (scan_cell_port->isPwrGnd()) {
+    if (IsPgPort(scan_cell_port)) {
       continue;
     }
     bool port_equiv
@@ -69,7 +94,7 @@ sta::LibertyPort* FindEquivalentPgPortInScanCell(
   sta::LibertyCellPortIterator scan_cell_ports_iter(scan_cell);
   while (scan_cell_ports_iter.hasNext()) {
     sta::LibertyPort* scan_cell_port = scan_cell_ports_iter.next();
-    if (!scan_cell_port->isPwrGnd()) {
+    if (!IsPgPort(scan_cell_port)) {
       continue;
     }
     const bool port_equiv
@@ -94,7 +119,7 @@ bool IsScanEquivalent(
   sta::LibertyCellPortIterator non_scan_cell_ports_iter(non_scan_cell);
   while (non_scan_cell_ports_iter.hasNext()) {
     sta::LibertyPort* non_scan_cell_port = non_scan_cell_ports_iter.next();
-    if (non_scan_cell_port->isPwrGnd()) {
+    if (IsPgPort(non_scan_cell_port)) {
       continue;
     }
     sta::LibertyPort* scan_equiv_port
@@ -111,7 +136,7 @@ bool IsScanEquivalent(
   while (non_scan_cell_pg_ports_iter.hasNext()) {
     sta::LibertyPort* non_scan_cell_pg_port
         = non_scan_cell_pg_ports_iter.next();
-    if (!non_scan_cell_pg_port->isPwrGnd()) {
+    if (!IsPgPort(non_scan_cell_pg_port)) {
       continue;
     }
     sta::LibertyPort* scan_equiv_port
@@ -129,7 +154,7 @@ bool IsScanEquivalent(
   sta::LibertyCellPortIterator scan_cell_ports_iter(scan_cell);
   while (scan_cell_ports_iter.hasNext()) {
     sta::LibertyPort* scan_cell_port = scan_cell_ports_iter.next();
-    if (scan_cell_port->isPwrGnd()) {
+    if (IsPgPort(scan_cell_port)) {
       continue;
     }
     if (seen_on_scan_cell.find(scan_cell_port) != seen_on_scan_cell.end()) {
@@ -137,6 +162,10 @@ bool IsScanEquivalent(
     }
     // Extra scan-related pins are ok.
     if (scan_cell_port->scanSignalType() != sta::ScanSignalType::none) {
+      continue;
+    }
+    // Fall back to common pin names when scan metadata is missing.
+    if (IsLikelyScanPortName(scan_cell_port->name())) {
       continue;
     }
     return false;
@@ -166,8 +195,10 @@ std::unique_ptr<ScanCandidate> SelectBestScanCell(
     const sta::LibertyCell* non_scan_cell,
     std::vector<std::unique_ptr<ScanCandidate>>& scan_candidates)
 {
-  std::ranges::sort(
-      scan_candidates, [&non_scan_cell](const auto& lhs, const auto& rhs) {
+  std::sort(
+      scan_candidates.begin(),
+      scan_candidates.end(),
+      [&non_scan_cell](const auto& lhs, const auto& rhs) {
         // We want to keep the difference as close as possible to
         // the non_scan_cell
         const double difference_lhs
@@ -320,8 +351,12 @@ void ScanReplace::collectScanCellAvailable()
 
 ScanReplace::ScanReplace(odb::dbDatabase* db,
                          sta::dbSta* sta,
-                         utl::Logger* logger)
-    : db_(db), sta_(sta), logger_(logger)
+                         utl::Logger* logger,
+                         const ScanArchitectConfig* architect_config)
+    : db_(db),
+      sta_(sta),
+      logger_(logger),
+      architect_config_(architect_config)
 {
   db_network_ = sta->getDbNetwork();
 }
@@ -348,6 +383,12 @@ void ScanReplace::scanReplace(odb::dbBlock* block)
 
     if (inst->isDoNotTouch()) {
       // Do not scan replace dont_touch
+      continue;
+    }
+
+    if (architect_config_ != nullptr
+        && architect_config_->isInstanceExcluded(inst->getName(),
+                                                 inst->getMaster()->getName())) {
       continue;
     }
 
@@ -410,8 +451,14 @@ void ScanReplace::scanReplace(odb::dbBlock* block)
     sta::LibertyCell* scan_cell = scan_candidate->getScanCell();
     odb::dbMaster* master_scan_cell = db_network_->staToDb(scan_cell);
 
-    odb::dbInst* new_cell = utils::ReplaceCell(
-        block, inst, master_scan_cell, scan_candidate->getPortMapping());
+    odb::dbInst* new_cell = utils::ReplaceCell(block,
+                                               inst,
+                                               master_scan_cell,
+                                               scan_candidate->getPortMapping(),
+                                               logger_);
+    if (new_cell == nullptr) {
+      continue;
+    }
 
     already_replaced.insert(new_cell);
     addCellForRollback(master, master_scan_cell, scan_candidate);
@@ -454,10 +501,20 @@ void ScanReplace::rollbackScanReplace(odb::dbBlock* block)
     }
 
     RollbackCandidate& rollback_candidate = *found->second;
-    utils::ReplaceCell(block,
-                       inst,
-                       rollback_candidate.getMaster(),
-                       rollback_candidate.getPortMapping());
+    odb::dbInst* new_cell
+        = utils::ReplaceCell(block,
+                             inst,
+                             rollback_candidate.getMaster(),
+                             rollback_candidate.getPortMapping(),
+                             logger_);
+    if (new_cell == nullptr) {
+      logger_->warn(
+          utl::DFT,
+          218,
+          "Failed to rollback scan replacement for instance '{}' (master '{}')",
+          inst->getName(),
+          rollback_candidate.getMaster()->getName());
+    }
   }
 
   // Recursive iterate inside the block to look for inside hiers

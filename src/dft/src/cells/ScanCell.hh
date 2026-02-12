@@ -43,12 +43,23 @@ class ScanCell
   const ClockDomain& getClockDomain() const;
   std::string_view getName() const;
 
+  // Optional timing metadata used for timing-aware scan ordering heuristics.
+  // Values are STA-reported pin slacks (max=setup, min=hold) at the scan-out
+  // driver pin in the current analysis mode.
+  void setTimingSlacks(float setup_slack, float hold_slack);
+  bool hasTimingSlacks() const;
+  float getSetupSlack() const;
+  float getHoldSlack() const;
+
   virtual odb::Point getOrigin() const = 0;
   virtual bool isPlaced() const = 0;
 
  private:
   std::string name_;
   std::unique_ptr<ClockDomain> clock_domain_;
+  bool has_timing_slacks_{false};
+  float setup_slack_{0.0F};
+  float hold_slack_{0.0F};
 
  protected:
   // Top function to connect either dbBTerms or dbITerms
