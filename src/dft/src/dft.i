@@ -213,6 +213,16 @@ void set_dft_config_scan_order_solver(dft::ScanArchitectConfig::ScanOrderSolver 
   getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setScanOrderSolver(solver);
 }
 
+void set_dft_config_ucla_major_loops(int major_loops)
+{
+  if (major_loops > 0) {
+    getDft()
+        ->getMutableDftConfig()
+        ->getMutableScanArchitectConfig()
+        ->setUclaMajorLoops(static_cast<uint64_t>(major_loops));
+  }
+}
+
 void set_dft_config_scanopt_rounds(int rounds)
 {
   if (rounds > 0) {
@@ -247,6 +257,11 @@ void set_dft_config_scanopt_t_div(double t_div)
   if (t_div > 0.0) {
     getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setScanOptTDiv(t_div);
   }
+}
+
+void invalidate_scan_architect_cache()
+{
+  getDft()->invalidateScanArchitectCache();
 }
 
 void set_dft_config_vertical_weight(double weight)

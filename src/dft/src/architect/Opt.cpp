@@ -516,8 +516,7 @@ UclaScanOptParams uclaParamsFromConfig(const ScanArchitectConfig& cfg)
 {
   UclaScanOptParams p;
   p.seed = cfg.getScanOptSeed();
-  // Map OpenROAD ScanOpt rounds (default 500k) to UCLA majorLoops (default 100).
-  p.major_loops = std::max<uint64_t>(1, cfg.getScanOptRounds() / 5000);
+  p.major_loops = cfg.getUclaMajorLoops();
   p.n_descents = 5;
   p.kick_move = 15;
   p.n_near = 20;
@@ -3558,6 +3557,32 @@ void OptimizeScanWirelength(
     }
     if (endpoints->end.has_value()) {
       end = EndpointPoint(*endpoints->end, design_block, logger);
+    }
+  }
+
+  // If the user (or implicit port patterns) specified begin/end as terminals,
+  // but we can't resolve them to a placed pin location, ScanOpt must infer a
+  // dummy begin/end point from scan cell locations. This is expected early in
+  // the flow if scan ports exist but have not been given geometry yet.
+  if (endpoints.has_value()
+      && config.getScanOrderSolver()
+             == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt
+      && !has_constraints) {
+    const bool unresolved_begin
+        = endpoints->begin.has_value() && !begin.has_value();
+    const bool unresolved_end = endpoints->end.has_value() && !end.has_value();
+    if (unresolved_begin || unresolved_end) {
+      static bool warned_unresolved_endpoints = false;
+      if (!warned_unresolved_endpoints) {
+        warned_unresolved_endpoints = true;
+        logger->warn(
+            utl::DFT,
+            321,
+            "SCANOPT (UCLA): chain begin/end could not be resolved to placed "
+            "pins (missing port geometry?). Inferring begin/end from scan cell "
+            "pins. Provide explicit chain begin/end endpoints or ensure scan "
+            "ports are placed before planning.");
+      }
     }
   }
 

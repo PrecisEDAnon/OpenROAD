@@ -137,6 +137,10 @@ class ScanArchitectConfig
   void setScanOutNamePattern(std::string_view pattern);
   std::string_view getScanOutNamePattern() const;
 
+  // UCLA ScanOptpack (SCANOPT) major loops (controls runtime).
+  void setUclaMajorLoops(uint64_t major_loops);
+  uint64_t getUclaMajorLoops() const;
+
   void setScanOptRounds(uint64_t rounds);
   uint64_t getScanOptRounds() const;
 
@@ -296,7 +300,8 @@ class ScanArchitectConfig
   // Which solver to use for scan ordering.
   ScanOrderSolver scan_order_solver_{ScanOrderSolver::UclaScanOpt};
 
-  // ScanOpt-style solver tuning knobs.
+  // Scan ordering solver tuning knobs.
+  uint64_t ucla_major_loops_{100};
   uint64_t scanopt_rounds_{500000};
   uint64_t scanopt_seed_{1};
   double scanopt_time_limit_seconds_{300.0};

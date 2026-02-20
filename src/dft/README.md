@@ -33,6 +33,7 @@ The command `set_dft_config` sets the DFT configuration variables.
 	    [-polarity_mode <string>]
 	    [-scan_order_metric <string>]
 	    [-scan_order_solver <string>]
+	    [-ucla_major_loops <int>]
 	    [-scanopt_rounds <int>]
 	    [-scanopt_seed <int>]
 	    [-scanopt_time_limit <float>]
@@ -76,10 +77,11 @@ The command `set_dft_config` sets the DFT configuration variables.
 | `-clock_mixing` | How scan cells are partitioned into chains by clock. `no_mix` (default) does not mix different clock domains in a chain. `clock_mix` mixes clock domains (requires lockup insertion between domains). |
 | `-polarity_mode` | How scan cells of different edge polarity are handled within a chain. `strict` (default) forbids mixing polarities within a chain, requiring separate chains when both polarities are present. `mid` allows mixed polarity, stitching falling-edge cells before rising-edge cells in each chain. |
 | `-scan_order_metric` | Metric for ordering scan cells within each chain. `PLACEMENT` uses scan-pin Manhattan distance. `PIN_TO_NET` uses pin-to-net distance to global-route guides (or detailed routes when present), falling back to placement distance. |
-| `-scan_order_solver` | Scan ordering solver. `HEURISTIC` is greedy + local cleanup. `SCANOPT` uses the UCLA ScanOptpack-010411 reference implementation (`PLACEMENT` only; begin/end are inferred if not provided; used as a preference when constraints are present). `ILS` selects the OpenROAD in-tree iterated local search solver (used automatically for `PIN_TO_NET`). |
-| `-scanopt_rounds` | Iteration budget for scan ordering solvers (`SCANOPT`/`ILS`) (default `500000`). |
+| `-scan_order_solver` | Scan ordering solver. `HEURISTIC` is greedy + local cleanup. `SCANOPT` uses the UCLA ScanOptpack-010411 reference implementation (`PLACEMENT` only; begin/end are inferred if not provided). When scan-order constraints are present, OpenROAD enforces the constraints and uses UCLA as a component-ordering preference (constraints are not passed into UCLA directly). `ILS` selects the OpenROAD in-tree iterated local search solver (used automatically for `PIN_TO_NET`). |
+| `-ucla_major_loops` | Iteration budget (“major loops”) for UCLA `SCANOPT` ordering (default `100`). |
+| `-scanopt_rounds` | Iteration budget for the OpenROAD in-tree `ILS` solver (default `500000`). |
 | `-scanopt_seed` | Random seed for scan ordering solvers (`SCANOPT`/`ILS`) (default `1`). |
-| `-scanopt_time_limit` | Total time budget (seconds) for `ILS` ordering across all scan chains. OpenROAD splits the budget across chains to keep runtime bounded as chain count increases. `0` means unlimited. Note: UCLA `SCANOPT` does not currently honor this time limit for `PLACEMENT`. |
+| `-scanopt_time_limit` | Total time budget (seconds) for `ILS` ordering across all scan chains. OpenROAD splits the budget across chains to keep runtime bounded as chain count increases. `0` means unlimited. Note: UCLA `SCANOPT` does not currently honor this time limit for `PLACEMENT`; use `-ucla_major_loops` to control UCLA runtime. |
 | `-scanopt_temp_control` | Enable temperature control (optional uphill acceptance) for `SCANOPT`/`ILS` (`0`/`1`). |
 | `-scanopt_t_div` | Temperature divisor for `ILS` temperature control (larger reduces uphill acceptance). |
 | `-vertical_weight` | Preferred wiring direction tuning. Values `>1` penalize vertical movement more than horizontal. Default `1.0`. |
@@ -119,10 +121,12 @@ Notes:
 - Coordinates are specified in **DBU** (the same units used by DEF/ODB).
 - A terminal can be either a top-level port name or an `inst/pin` reference. If an
   instance name contains a literal `/`, escape it as `\\/`.
+- Groups must be **disjoint or strictly hierarchical** (single parent). A given instance
+  (or sub-group) may not be referenced by multiple groups.
 
 Supported directives:
 - `default_priority <0..127>`
-- `group [<name>] [<priority>] <inst|group...>`: keep members together (supports hierarchical groups).
+- `group [<name>] [<priority>] <inst|group...>`: keep members contiguous in scan order (supports hierarchical groups).
 - `path [<name>] [<priority>] <inst...>`: strict order (no interpolation; forms a fixed subpath).
 - `fixed_edge <from> <to>`: directed adjacency.
 - `before <a> <b>`: partial order (enforces `<a>` before `<b>`; cycles error).

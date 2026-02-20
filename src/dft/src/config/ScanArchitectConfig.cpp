@@ -214,6 +214,11 @@ std::string_view ScanArchitectConfig::getScanOutNamePattern() const
   return scan_out_name_pattern_;
 }
 
+uint64_t ScanArchitectConfig::getUclaMajorLoops() const
+{
+  return ucla_major_loops_;
+}
+
 uint64_t ScanArchitectConfig::getScanOptRounds() const
 {
   return scanopt_rounds_;
@@ -324,6 +329,11 @@ void ScanArchitectConfig::setScanInNamePattern(std::string_view pattern)
 void ScanArchitectConfig::setScanOutNamePattern(std::string_view pattern)
 {
   scan_out_name_pattern_ = std::string(pattern);
+}
+
+void ScanArchitectConfig::setUclaMajorLoops(uint64_t major_loops)
+{
+  ucla_major_loops_ = std::max<uint64_t>(1, major_loops);
 }
 
 void ScanArchitectConfig::setScanOptRounds(uint64_t rounds)
@@ -1106,6 +1116,50 @@ bool ScanArchitectConfig::loadScanOrderConstraintsFile(
     }
   }
 
+  // Reject ambiguous group membership. Overlapping groups (or a sub-group
+  // referenced by multiple parent groups) create a DAG of membership and
+  // undermine "contiguity per group" semantics.
+  if (logger && !raw_groups.empty()) {
+    std::unordered_map<std::string, std::vector<std::string>> member_to_groups;
+    member_to_groups.reserve(raw_groups.size() * 4);
+
+    for (const auto& [group_name, group] : raw_groups) {
+      (void) group_name;
+      for (const std::string& tok : group.members) {
+        member_to_groups[tok].push_back(group.name);
+      }
+    }
+
+    for (auto& [tok, parents] : member_to_groups) {
+      if (parents.size() <= 1) {
+        continue;
+      }
+      std::sort(parents.begin(), parents.end());
+      parents.erase(std::unique(parents.begin(), parents.end()), parents.end());
+      if (parents.size() <= 1) {
+        continue;
+      }
+
+      std::string parent_list;
+      for (std::size_t i = 0; i < parents.size(); ++i) {
+        if (i != 0) {
+          parent_list += ", ";
+        }
+        parent_list += parents[i];
+      }
+
+      const bool is_group = raw_groups.find(tok) != raw_groups.end();
+      logger->error(
+          utl::DFT,
+          is_group ? 319 : 320,
+          "Scan constraints: {} '{}' is referenced by multiple groups ({}). "
+          "Groups must be disjoint or strictly hierarchical (single parent).",
+          is_group ? "group" : "instance",
+          tok,
+          parent_list);
+    }
+  }
+
   // Resolve hierarchical groups. Group membership is used for scan ordering
   // constraints (e.g., "before") and does not, by itself, force instances into
   // the same scan chain.
@@ -1289,12 +1343,15 @@ void ScanArchitectConfig::report(utl::Logger* logger) const
   if (scan_order_solver_ != ScanOrderSolver::Heuristic) {
     // Scan-order solver tuning knobs. These are shared across solver backends, but
     // some knobs are only honored by the in-tree `ILS` solver.
-    logger->report("- ScanOpt Rounds: {}", scanopt_rounds_);
-    logger->report("- ScanOpt Seed: {}", scanopt_seed_);
-    logger->report("- ScanOpt Temp Control: {}", scanopt_temp_control_);
     const char* ils_only = (scan_order_solver_ == ScanOrderSolver::UclaScanOpt)
                                ? " (ILS only)"
                                : "";
+    if (scan_order_solver_ == ScanOrderSolver::UclaScanOpt) {
+      logger->report("- UCLA Major Loops: {}", ucla_major_loops_);
+    }
+    logger->report("- ScanOpt Rounds: {}{}", scanopt_rounds_, ils_only);
+    logger->report("- ScanOpt Seed: {}", scanopt_seed_);
+    logger->report("- ScanOpt Temp Control: {}", scanopt_temp_control_);
     logger->report("- ScanOpt TDiv: {:.3f}{}", scanopt_t_div_, ils_only);
     if (scanopt_time_limit_seconds_ > 0.0) {
       logger->report("- ScanOpt Time Limit: {:.3f}s{}",

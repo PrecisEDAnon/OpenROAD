@@ -602,6 +602,13 @@ void Dft::reset()
   auto_exclusions_cache_valid_ = false;
   cached_auto_exclude_shift_registers_ = false;
   cached_shift_register_min_length_ = 0;
+  invalidateScanArchitectCache();
+}
+
+void Dft::invalidateScanArchitectCache()
+{
+  scan_architect_cache_valid_ = false;
+  scan_architect_cache_.clear();
 }
 
 void Dft::pre_dft()
@@ -623,7 +630,7 @@ void Dft::reportDftPlan(bool verbose)
     pre_dft();
   }
 
-  std::vector<std::unique_ptr<ScanChain>> scan_chains = scanArchitect();
+  const auto& scan_chains = scanArchitect();
 
   logger_->report("***************************");
   logger_->report("Report DFT Plan");
@@ -646,7 +653,7 @@ void Dft::reportDftPlanPins(bool verbose)
     pre_dft();
   }
 
-  std::vector<std::unique_ptr<ScanChain>> scan_chains = scanArchitect();
+  const auto& scan_chains = scanArchitect();
 
   odb::dbBlock* block = db_->getChip() ? db_->getChip()->getBlock() : nullptr;
   const int dbu_per_micron = block ? block->getDbUnitsPerMicron() : 0;
@@ -697,6 +704,7 @@ void Dft::scanReplace()
   if (need_to_run_pre_dft_) {
     pre_dft();
   }
+  invalidateScanArchitectCache();
   applyAutoExclusions();
   scan_replace_->scanReplace();
 }
@@ -708,7 +716,7 @@ void Dft::executeDftPlan()
   }
   const bool use_existing_scan_chains
       = dft_config_->getScanArchitectConfig().getUseExistingScanChains();
-  std::vector<std::unique_ptr<ScanChain>> scan_chains = scanArchitect();
+  const auto& scan_chains = scanArchitect();
 
   warnPowerDomainCrossings(db_, logger_, dft_config_->getScanArchitectConfig(), scan_chains);
   warnSpecialCells(db_, sta_, logger_, scan_chains, /*post_stitch=*/false);
@@ -1510,12 +1518,20 @@ std::vector<std::unique_ptr<ScanChain>> Dft::scanArchitectFromDb()
   return scan_chains;
 }
 
-std::vector<std::unique_ptr<ScanChain>> Dft::scanArchitect()
+const std::vector<std::unique_ptr<ScanChain>>& Dft::scanArchitect()
 {
   applyAutoExclusions();
 
+  if (scan_architect_cache_valid_) {
+    return scan_architect_cache_;
+  }
+
+  scan_architect_cache_.clear();
+
   if (dft_config_->getScanArchitectConfig().getUseExistingScanChains()) {
-    return scanArchitectFromDb();
+    scan_architect_cache_ = scanArchitectFromDb();
+    scan_architect_cache_valid_ = true;
+    return scan_architect_cache_;
   }
 
   std::vector<std::unique_ptr<ScanCell>> scan_cells
@@ -1534,7 +1550,9 @@ std::vector<std::unique_ptr<ScanChain>> Dft::scanArchitect()
   scan_architect->init();
   scan_architect->architect();
 
-  return scan_architect->getScanChains();
+  scan_architect_cache_ = scan_architect->getScanChains();
+  scan_architect_cache_valid_ = true;
+  return scan_architect_cache_;
 }
 
 void Dft::applyAutoExclusions()
@@ -1551,6 +1569,9 @@ void Dft::applyAutoExclusions()
   if (cache_hit) {
     return;
   }
+
+  // Exclusions affect scan planning/ordering; invalidate any cached plan.
+  invalidateScanArchitectCache();
 
   config->clearAutoExcludedInstances();
   if (enable_shift_regs) {
@@ -1571,7 +1592,8 @@ void Dft::scanOpt()
 
   // Re-run scan planning using the latest placement, then re-stitch scan
   // connections. This updates scan ordering without re-running scan_replace.
-  std::vector<std::unique_ptr<ScanChain>> scan_chains = scanArchitect();
+  invalidateScanArchitectCache();
+  const auto& scan_chains = scanArchitect();
   if (scan_chains.empty()) {
     logger_->warn(utl::DFT,
                   14,

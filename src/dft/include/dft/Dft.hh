@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "db_sta/dbSta.hh"
 #include "odb/db.h"
@@ -107,6 +109,10 @@ class Dft
   // Performs scan optimizations on the netlist
   void scanOpt();
 
+  // Clears any cached scan plan so subsequent report/execute commands
+  // recompute scan planning/ordering from the current design state.
+  void invalidateScanArchitectCache();
+
  private:
   // If we need to run pre_dft to create the internal state
   bool need_to_run_pre_dft_{true};
@@ -117,12 +123,17 @@ class Dft
   bool cached_auto_exclude_shift_registers_{false};
   int cached_shift_register_min_length_{0};
 
+  // Cache for scan planning/ordering (scanArchitect) to avoid recomputing the
+  // same plan multiple times in one OpenROAD session (e.g., report + execute).
+  bool scan_architect_cache_valid_{false};
+  std::vector<std::unique_ptr<ScanChain>> scan_architect_cache_;
+
   // Resets the internal state
   void reset();
 
   // Common function to perform scan replace and scan architect. Shared between
   // report_dft_plan and execute_dft_plan
-  std::vector<std::unique_ptr<ScanChain>> scanArchitect();
+  const std::vector<std::unique_ptr<ScanChain>>& scanArchitect();
 
   // Uses scan chains already stored in ODB (e.g. imported SCANDEF) as the scan
   // plan.

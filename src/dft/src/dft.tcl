@@ -118,6 +118,7 @@ sta::define_cmd_args "set_dft_config" { [-max_length max_length]
                                         [-polarity_mode polarity_mode]
                                         [-scan_order_metric scan_order_metric]
                                         [-scan_order_solver scan_order_solver]
+                                        [-ucla_major_loops ucla_major_loops]
                                         [-scanopt_rounds scanopt_rounds]
                                         [-scanopt_seed scanopt_seed]
                                         [-scanopt_time_limit scanopt_time_limit]
@@ -160,6 +161,7 @@ proc set_dft_config { args } {
       -polarity_mode
       -scan_order_metric
       -scan_order_solver
+      -ucla_major_loops
       -scanopt_rounds
       -scanopt_seed
       -scanopt_time_limit
@@ -242,6 +244,12 @@ proc set_dft_config { args } {
   if { [info exists keys(-scan_order_solver)] } {
     set solver $keys(-scan_order_solver)
     dft::set_dft_config_scan_order_solver $solver
+  }
+
+  if { [info exists keys(-ucla_major_loops)] } {
+    set major_loops $keys(-ucla_major_loops)
+    sta::check_positive_integer "-ucla_major_loops" $major_loops
+    dft::set_dft_config_ucla_major_loops $major_loops
   }
 
   if { [info exists keys(-scanopt_rounds)] } {
@@ -425,6 +433,10 @@ proc set_dft_config { args } {
   if { [info exists keys(-timing_buffer_out_pin)] } {
     dft::set_dft_config_timing_buffer_out_pin $keys(-timing_buffer_out_pin)
   }
+
+  # set_dft_config changes planner/optimizer behavior; invalidate any cached
+  # scan plan so subsequent report/execute commands reflect the new settings.
+  dft::invalidate_scan_architect_cache
 }
 
 sta::define_cmd_args "report_dft_config" { }
