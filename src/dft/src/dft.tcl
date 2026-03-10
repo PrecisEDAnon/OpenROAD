@@ -120,11 +120,18 @@ sta::define_cmd_args "set_dft_config" { [-max_length max_length]
                                         [-scan_order_solver scan_order_solver]
                                         [-scanopt_rounds scanopt_rounds]
                                         [-scanopt_seed scanopt_seed]
+                                        [-scanopt_restarts scanopt_restarts]
+                                        [-scanopt_threads scanopt_threads]
+                                        [-ucla_major_loops ucla_major_loops]
+                                        [-ucla_restarts ucla_restarts]
+                                        [-ucla_threads ucla_threads]
+                                        [-ucla_time_limit ucla_time_limit]
                                         [-scanopt_time_limit scanopt_time_limit]
                                         [-scanopt_temp_control scanopt_temp_control]
                                         [-scanopt_t_div scanopt_t_div]
                                         [-vertical_weight vertical_weight]
                                         [-blockage_weight blockage_weight]
+                                        [-virtual_pin_weight virtual_pin_weight]
                                         [-timing_setup_weight timing_setup_weight]
                                         [-timing_hold_weight timing_hold_weight]
                                         [-timing_critical_slack timing_critical_slack]
@@ -162,11 +169,18 @@ proc set_dft_config { args } {
       -scan_order_solver
       -scanopt_rounds
       -scanopt_seed
+      -scanopt_restarts
+      -scanopt_threads
+      -ucla_major_loops
+      -ucla_restarts
+      -ucla_threads
+      -ucla_time_limit
       -scanopt_time_limit
       -scanopt_temp_control
       -scanopt_t_div
       -vertical_weight
       -blockage_weight
+      -virtual_pin_weight
       -timing_setup_weight
       -timing_hold_weight
       -timing_critical_slack
@@ -256,6 +270,47 @@ proc set_dft_config { args } {
     dft::set_dft_config_scanopt_seed $seed
   }
 
+  if { [info exists keys(-scanopt_restarts)] } {
+    set restarts $keys(-scanopt_restarts)
+    sta::check_positive_integer "-scanopt_restarts" $restarts
+    dft::set_dft_config_scanopt_restarts $restarts
+  }
+
+  if { [info exists keys(-scanopt_threads)] } {
+    set threads $keys(-scanopt_threads)
+    sta::check_positive_integer "-scanopt_threads" $threads
+    dft::set_dft_config_scanopt_threads $threads
+  }
+
+  if { [info exists keys(-ucla_major_loops)] } {
+    set loops $keys(-ucla_major_loops)
+    sta::check_positive_integer "-ucla_major_loops" $loops
+    dft::set_dft_config_ucla_major_loops $loops
+  }
+
+  if { [info exists keys(-ucla_restarts)] } {
+    set restarts $keys(-ucla_restarts)
+    sta::check_positive_integer "-ucla_restarts" $restarts
+    dft::set_dft_config_ucla_restarts $restarts
+  }
+
+  if { [info exists keys(-ucla_threads)] } {
+    set threads $keys(-ucla_threads)
+    sta::check_positive_integer "-ucla_threads" $threads
+    dft::set_dft_config_ucla_threads $threads
+  }
+
+  if { [info exists keys(-ucla_time_limit)] } {
+    set s $keys(-ucla_time_limit)
+    if { ![string is double -strict $s] } {
+      utl::error DFT 236 "Expected a floating-point value for -ucla_time_limit"
+    }
+    if { $s < 0.0 } {
+      utl::error DFT 237 "Expected a non-negative value for -ucla_time_limit"
+    }
+    dft::set_dft_config_ucla_time_limit $s
+  }
+
   if { [info exists keys(-scanopt_time_limit)] } {
     set s $keys(-scanopt_time_limit)
     if { ![string is double -strict $s] } {
@@ -306,6 +361,17 @@ proc set_dft_config { args } {
       utl::error DFT 235 "Expected a non-negative value for -blockage_weight"
     }
     dft::set_dft_config_blockage_weight $w
+  }
+
+  if { [info exists keys(-virtual_pin_weight)] } {
+    set w $keys(-virtual_pin_weight)
+    if { ![string is double -strict $w] } {
+      utl::error DFT 238 "Expected a floating-point value for -virtual_pin_weight"
+    }
+    if { $w < 0.0 } {
+      utl::error DFT 239 "Expected a non-negative value for -virtual_pin_weight"
+    }
+    dft::set_dft_config_virtual_pin_weight $w
   }
 
   foreach {flag setter} {

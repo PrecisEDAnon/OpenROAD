@@ -49,3 +49,8 @@ target_compile_options(dft_ucla_scanopt_lib
     $<$<CXX_COMPILER_ID:MSVC>:/w>
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>
 )
+
+target_link_libraries(dft_ucla_scanopt_lib
+  PRIVATE
+    ortools::ortools
+)

@@ -45,7 +45,8 @@ class ScanArchitectConfig
   {
     Heuristic,  // Greedy + local search heuristics (fast)
     ScanOpt,    // OpenROAD in-tree iterated local search ("ILS")
-    UclaScanOpt // ScanOptpack-010411 (UCLA reference implementation; "SCANOPT")
+    UclaScanOpt,  // ScanOptpack-010411 (UCLA reference implementation; "SCANOPT")
+    UclaScanOptPortfolio  // Parallel portfolio (multi-start) over UCLA ScanOptpack
   };
 
   struct ScanOrderGroupConstraint
@@ -144,6 +145,35 @@ class ScanArchitectConfig
   void setScanOptSeed(uint64_t seed);
   uint64_t getScanOptSeed() const;
 
+  // Optional number of independent in-tree ScanOpt (ILS) runs. `1` preserves
+  // historical single-run behavior.
+  void setScanOptRestarts(uint64_t restarts);
+  uint64_t getScanOptRestarts() const;
+
+  // Number of threads to use for ScanOpt multi-start (1 = serial).
+  void setScanOptThreads(uint64_t threads);
+  uint64_t getScanOptThreads() const;
+
+  // UCLA ScanOpt (ScanOptpack) major loop count. This controls runtime for
+  // `SCANOPT` ordering since UCLApack does not have an upstream time-budget
+  // mechanism.
+  void setUclaMajorLoops(uint64_t loops);
+  uint64_t getUclaMajorLoops() const;
+
+  // Optional number of independent UCLA multi-start runs. `1` preserves the
+  // historical single-run behavior.
+  void setUclaRestarts(uint64_t restarts);
+  uint64_t getUclaRestarts() const;
+
+  // Number of threads to use for UCLA multi-start (1 = serial).
+  void setUclaThreads(uint64_t threads);
+  uint64_t getUclaThreads() const;
+
+  // Optional UCLA ScanOpt time limit in seconds (0 = unlimited). When set,
+  // the multi-start search stops after the deadline.
+  void setUclaTimeLimitSeconds(double seconds);
+  double getUclaTimeLimitSeconds() const;
+
   // Optional ScanOpt time limit in seconds (0 = unlimited).
   void setScanOptTimeLimitSeconds(double seconds);
   double getScanOptTimeLimitSeconds() const;
@@ -171,6 +201,15 @@ class ScanArchitectConfig
   // cost as a soft proxy for blockage/congestion avoidance.
   void setBlockageWeight(double weight);
   double getBlockageWeight() const;
+
+  // Optional virtual-pin penalty (PIN_TO_NET metric):
+  // When routing geometry is available for the source scan-out net, we can
+  // compute a "virtual pin" on that net that is closest to the destination
+  // scan-in. This weight penalizes how far that virtual pin is from the
+  // source scan-out pin location, discouraging solutions that rely on very
+  // remote attachment points on long/wide nets.
+  void setVirtualPinWeight(double weight);
+  double getVirtualPinWeight() const;
 
   // Optional timing-aware penalty (Gupta'03-style extension):
   // Edge costs are scaled by a penalty based on timing slack at the scan-out
@@ -300,6 +339,12 @@ class ScanArchitectConfig
   // ScanOpt-style solver tuning knobs.
   uint64_t scanopt_rounds_{500000};
   uint64_t scanopt_seed_{1};
+  uint64_t scanopt_restarts_{1};
+  uint64_t scanopt_threads_{1};
+  uint64_t ucla_major_loops_{100};
+  uint64_t ucla_restarts_{1};
+  uint64_t ucla_threads_{1};
+  double ucla_time_limit_seconds_{0.0};
   double scanopt_time_limit_seconds_{300.0};
   bool scanopt_temp_control_{false};
   double scanopt_t_div_{100.0};
@@ -314,6 +359,9 @@ class ScanArchitectConfig
 
   // Blockage-aware detour penalty weight (0 disables).
   double blockage_weight_{1.0};
+
+  // Virtual-pin distance weight (0 disables).
+  double virtual_pin_weight_{0.0};
 
   // Timing-aware penalty knobs.
   double timing_weight_setup_{0.0};

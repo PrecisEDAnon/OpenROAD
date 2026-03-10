@@ -10,6 +10,7 @@ set(TEST_LIBS
   dft_architect_lib
   dft_clock_domain_lib
   dft_utils_scan_pin_lib
+  dft_utils_virtual_net_lib
 )
 
 add_executable(TestScanArchitect TestScanArchitect.cpp)
@@ -24,8 +25,13 @@ add_executable(TestScanOrderOpt TestScanOrderOpt.cpp)
 target_link_libraries(TestScanOrderOpt ${TEST_LIBS})
 gtest_discover_tests(TestScanOrderOpt WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(TestVirtualNetGeometry TestVirtualNetGeometry.cpp)
+target_link_libraries(TestVirtualNetGeometry ${TEST_LIBS})
+gtest_discover_tests(TestVirtualNetGeometry WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_dependencies(build_and_test
   TestScanArchitect
   TestScanArchitectHeuristic
   TestScanOrderOpt
+  TestVirtualNetGeometry
 )

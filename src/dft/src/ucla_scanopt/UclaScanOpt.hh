@@ -17,6 +17,9 @@ struct UclaScanOptParams
 
   // UCLA ScanOpt params (Optimizer1).
   uint64_t major_loops = 100;
+  uint64_t restarts = 1;
+  double time_limit_seconds = 0.0;
+  uint64_t threads = 1;
   uint64_t n_descents = 5;
   uint64_t kick_move = 15;
   uint64_t n_near = 20;
@@ -38,5 +41,16 @@ std::vector<std::size_t> UclaScanOptOrder(
     const std::pair<int, int>& end,
     const UclaScanOptParams& params);
 
-}  // namespace dft
+// Parallel portfolio over UCLA ScanOptpack:
+// - runs many short multi-start attempts (optionally time-bounded)
+// - shares elites across threads
+// - returns the best ordering found within the budget
+std::vector<std::size_t> UclaScanOptOrderPortfolio(
+    const std::vector<std::string_view>& names,
+    const std::vector<std::pair<int, int>>& scan_in_pts,
+    const std::vector<std::pair<int, int>>& scan_out_pts,
+    const std::pair<int, int>& begin,
+    const std::pair<int, int>& end,
+    const UclaScanOptParams& params);
 
+}  // namespace dft

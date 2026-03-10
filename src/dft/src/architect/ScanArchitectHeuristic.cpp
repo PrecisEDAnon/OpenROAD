@@ -2717,6 +2717,26 @@ void ScanArchitectHeuristic::architect()
                   scanopt_time_limit_per_chain_s);
   }
 
+  // Interpret ucla_time_limit as a total time budget across all chains.
+  const double ucla_time_limit_total_s = config_.getUclaTimeLimitSeconds();
+  const bool split_ucla_time_limit
+      = config_.getScanOrderSolver()
+            == ScanArchitectConfig::ScanOrderSolver::UclaScanOptPortfolio
+        && ucla_time_limit_total_s > 0.0 && total_chains > 1;
+  const double ucla_time_limit_per_chain_s
+      = split_ucla_time_limit
+            ? (ucla_time_limit_total_s / static_cast<double>(total_chains))
+            : ucla_time_limit_total_s;
+  if (split_ucla_time_limit) {
+    logger_->info(utl::DFT,
+                  213,
+                  "UCLA ScanOpt time limit {:.1f}s split across {} chains => "
+                  "{:.1f}s per chain",
+                  ucla_time_limit_total_s,
+                  total_chains,
+                  ucla_time_limit_per_chain_s);
+  }
+
   // Pop all scan cells up-front so we can validate cross-domain constraints.
   std::unordered_map<std::size_t, std::vector<std::unique_ptr<ScanCell>>>
       cells_by_domain;
@@ -2920,7 +2940,9 @@ void ScanArchitectHeuristic::architect()
 	           endpoints,
 	           chain_name,
 	           split_scanopt_time_limit,
-	           scanopt_time_limit_per_chain_s](
+	           scanopt_time_limit_per_chain_s,
+	           split_ucla_time_limit,
+	           ucla_time_limit_per_chain_s](
 	              std::vector<std::unique_ptr<ScanCell>>& falling,
 	              std::vector<std::unique_ptr<ScanCell>>& rising,
 	              std::vector<std::unique_ptr<ScanCell>>& sorted) {
@@ -3035,7 +3057,10 @@ void ScanArchitectHeuristic::architect()
 	            }
 
 	            // Sort to reduce wire length
-	            if (split_scanopt_time_limit) {
+	            if (split_scanopt_time_limit || split_ucla_time_limit) {
+	              const double per_chain_s = split_scanopt_time_limit
+	                                             ? scanopt_time_limit_per_chain_s
+	                                             : ucla_time_limit_per_chain_s;
 	              const auto sum_bits
 	                  = [](const std::vector<std::unique_ptr<ScanCell>>& v)
 	                  -> uint64_t {
@@ -3049,20 +3074,26 @@ void ScanArchitectHeuristic::architect()
 	              const uint64_t rising_bits = sum_bits(rising);
 	              const uint64_t total_bits = falling_bits + rising_bits;
 
-	              double falling_s = scanopt_time_limit_per_chain_s;
-	              double rising_s = scanopt_time_limit_per_chain_s;
+	              double falling_s = per_chain_s;
+	              double rising_s = per_chain_s;
 	              if (total_bits != 0 && !falling.empty() && !rising.empty()) {
 	                falling_s
-	                    = scanopt_time_limit_per_chain_s
+	                    = per_chain_s
 	                      * (static_cast<double>(falling_bits)
 	                         / static_cast<double>(total_bits));
-	                rising_s = scanopt_time_limit_per_chain_s - falling_s;
+	                rising_s = per_chain_s - falling_s;
 	              }
 
 	              ScanArchitectConfig falling_cfg = config_;
 	              ScanArchitectConfig rising_cfg = config_;
-	              falling_cfg.setScanOptTimeLimitSeconds(falling_s);
-	              rising_cfg.setScanOptTimeLimitSeconds(rising_s);
+	              if (split_scanopt_time_limit) {
+	                falling_cfg.setScanOptTimeLimitSeconds(falling_s);
+	                rising_cfg.setScanOptTimeLimitSeconds(rising_s);
+	              }
+	              if (split_ucla_time_limit) {
+	                falling_cfg.setUclaTimeLimitSeconds(falling_s);
+	                rising_cfg.setUclaTimeLimitSeconds(rising_s);
+	              }
 
 	              OptimizeScanWirelength(
 	                  falling, falling_cfg, logger_, falling_eps);

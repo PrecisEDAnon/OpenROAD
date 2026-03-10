@@ -224,6 +224,36 @@ uint64_t ScanArchitectConfig::getScanOptSeed() const
   return scanopt_seed_;
 }
 
+uint64_t ScanArchitectConfig::getScanOptRestarts() const
+{
+  return scanopt_restarts_;
+}
+
+uint64_t ScanArchitectConfig::getScanOptThreads() const
+{
+  return scanopt_threads_;
+}
+
+uint64_t ScanArchitectConfig::getUclaMajorLoops() const
+{
+  return ucla_major_loops_;
+}
+
+uint64_t ScanArchitectConfig::getUclaRestarts() const
+{
+  return ucla_restarts_;
+}
+
+uint64_t ScanArchitectConfig::getUclaThreads() const
+{
+  return ucla_threads_;
+}
+
+double ScanArchitectConfig::getUclaTimeLimitSeconds() const
+{
+  return ucla_time_limit_seconds_;
+}
+
 double ScanArchitectConfig::getScanOptTimeLimitSeconds() const
 {
   return scanopt_time_limit_seconds_;
@@ -247,6 +277,11 @@ double ScanArchitectConfig::getVerticalWeight() const
 double ScanArchitectConfig::getBlockageWeight() const
 {
   return blockage_weight_;
+}
+
+double ScanArchitectConfig::getVirtualPinWeight() const
+{
+  return virtual_pin_weight_;
 }
 
 double ScanArchitectConfig::getTimingWeightSetup() const
@@ -336,6 +371,38 @@ void ScanArchitectConfig::setScanOptSeed(uint64_t seed)
   scanopt_seed_ = seed;
 }
 
+void ScanArchitectConfig::setScanOptRestarts(uint64_t restarts)
+{
+  scanopt_restarts_ = std::max<uint64_t>(1, restarts);
+}
+
+void ScanArchitectConfig::setScanOptThreads(uint64_t threads)
+{
+  scanopt_threads_ = std::max<uint64_t>(1, threads);
+}
+
+void ScanArchitectConfig::setUclaMajorLoops(uint64_t loops)
+{
+  ucla_major_loops_ = std::max<uint64_t>(1, loops);
+}
+
+void ScanArchitectConfig::setUclaRestarts(uint64_t restarts)
+{
+  ucla_restarts_ = std::max<uint64_t>(1, restarts);
+}
+
+void ScanArchitectConfig::setUclaThreads(uint64_t threads)
+{
+  ucla_threads_ = std::max<uint64_t>(1, threads);
+}
+
+void ScanArchitectConfig::setUclaTimeLimitSeconds(double seconds)
+{
+  if (seconds >= 0.0) {
+    ucla_time_limit_seconds_ = seconds;
+  }
+}
+
 void ScanArchitectConfig::setScanOptTimeLimitSeconds(double seconds)
 {
   if (seconds >= 0.0) {
@@ -366,6 +433,13 @@ void ScanArchitectConfig::setBlockageWeight(double weight)
 {
   if (weight >= 0.0) {
     blockage_weight_ = weight;
+  }
+}
+
+void ScanArchitectConfig::setVirtualPinWeight(double weight)
+{
+  if (weight >= 0.0) {
+    virtual_pin_weight_ = weight;
   }
 }
 
@@ -1280,6 +1354,9 @@ void ScanArchitectConfig::report(utl::Logger* logger) const
                  ScanOrderSolverName(scan_order_solver_));
   logger->report("- Vertical Weight: {:.3f}", vertical_weight_);
   logger->report("- Blockage Weight: {:.3f}", blockage_weight_);
+  if (virtual_pin_weight_ != 0.0) {
+    logger->report("- Virtual Pin Weight: {:.3f}", virtual_pin_weight_);
+  }
   logger->report("- Max Imbalance: {:.1f}%", max_imbalance_percent_);
   if (timing_weight_setup_ != 0.0 || timing_weight_hold_ != 0.0) {
     logger->report("- Timing Setup Weight: {:.3f}", timing_weight_setup_);
@@ -1287,19 +1364,50 @@ void ScanArchitectConfig::report(utl::Logger* logger) const
     logger->report("- Timing Critical Slack: {:.3f}", timing_critical_slack_);
   }
   if (scan_order_solver_ != ScanOrderSolver::Heuristic) {
+    const bool is_ucla
+        = scan_order_solver_ == ScanOrderSolver::UclaScanOpt
+          || scan_order_solver_ == ScanOrderSolver::UclaScanOptPortfolio;
+    const bool is_ucla_portfolio
+        = scan_order_solver_ == ScanOrderSolver::UclaScanOptPortfolio;
+
     // Scan-order solver tuning knobs. These are shared across solver backends, but
     // some knobs are only honored by the in-tree `ILS` solver.
-    logger->report("- ScanOpt Rounds: {}", scanopt_rounds_);
     logger->report("- ScanOpt Seed: {}", scanopt_seed_);
+    if (is_ucla) {
+      logger->report("- ScanOpt Restarts: {} (ILS only)", scanopt_restarts_);
+      logger->report("- ScanOpt Threads: {} (ILS only)", scanopt_threads_);
+    } else {
+      logger->report("- ScanOpt Restarts: {}", scanopt_restarts_);
+      logger->report("- ScanOpt Threads: {}", scanopt_threads_);
+    }
     logger->report("- ScanOpt Temp Control: {}", scanopt_temp_control_);
-    const char* ils_only = (scan_order_solver_ == ScanOrderSolver::UclaScanOpt)
-                               ? " (ILS only)"
-                               : "";
-    logger->report("- ScanOpt TDiv: {:.3f}{}", scanopt_t_div_, ils_only);
-    if (scanopt_time_limit_seconds_ > 0.0) {
-      logger->report("- ScanOpt Time Limit: {:.3f}s{}",
-                     scanopt_time_limit_seconds_,
-                     ils_only);
+
+    if (is_ucla) {
+      logger->report("- UCLA Major Loops: {}", ucla_major_loops_);
+      if (ucla_time_limit_seconds_ > 0.0) {
+        logger->report("- UCLA Time Limit: {:.3f}s{}", ucla_time_limit_seconds_,
+                       is_ucla_portfolio ? "" : " (portfolio only)");
+      }
+      if (is_ucla_portfolio) {
+        logger->report("- UCLA Restarts: {}", ucla_restarts_);
+        logger->report("- UCLA Threads: {}", ucla_threads_);
+      } else {
+        logger->report("- UCLA Restarts: {} (portfolio only)", ucla_restarts_);
+        logger->report("- UCLA Threads: {} (portfolio only)", ucla_threads_);
+      }
+      logger->report("- ScanOpt Rounds: {} (ILS only)", scanopt_rounds_);
+      logger->report("- ScanOpt TDiv: {:.3f} (ILS only)", scanopt_t_div_);
+      if (scanopt_time_limit_seconds_ > 0.0) {
+        logger->report("- ScanOpt Time Limit: {:.3f}s (ILS only)",
+                       scanopt_time_limit_seconds_);
+      }
+    } else {
+      logger->report("- ScanOpt Rounds: {}", scanopt_rounds_);
+      logger->report("- ScanOpt TDiv: {:.3f}", scanopt_t_div_);
+      if (scanopt_time_limit_seconds_ > 0.0) {
+        logger->report("- ScanOpt Time Limit: {:.3f}s",
+                       scanopt_time_limit_seconds_);
+      }
     }
   }
   if (!scan_order_groups_.empty() || !scan_order_fixed_edges_.empty()) {
@@ -1398,6 +1506,8 @@ std::string ScanArchitectConfig::ScanOrderSolverName(
       return "ILS";
     case ScanArchitectConfig::ScanOrderSolver::UclaScanOpt:
       return "ScanOpt";
+    case ScanArchitectConfig::ScanOrderSolver::UclaScanOptPortfolio:
+      return "ScanOpt (portfolio)";
     default:
       return "Missing case in ScanOrderSolverName";
   }

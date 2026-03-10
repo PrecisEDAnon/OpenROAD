@@ -120,6 +120,10 @@ utl::Logger* getLogger()
     $1 = 1;
   } else if (strcasecmp(str, "UCLA_SCANOPT") == 0) {
     $1 = 1;
+  } else if (strcasecmp(str, "SCANOPT_PORTFOLIO") == 0) {
+    $1 = 1;
+  } else if (strcasecmp(str, "UCLA_SCANOPT_PORTFOLIO") == 0) {
+    $1 = 1;
   } else if (strcasecmp(str, "ILS") == 0) {
     $1 = 1;
   } else if (strcasecmp(str, "OPENROAD_ILS") == 0) {
@@ -133,6 +137,9 @@ utl::Logger* getLogger()
   char *str = Tcl_GetStringFromObj($input, 0);
   if (strcasecmp(str, "ILS") == 0 || strcasecmp(str, "OPENROAD_ILS") == 0) {
     $1 = dft::ScanArchitectConfig::ScanOrderSolver::ScanOpt;
+  } else if (strcasecmp(str, "SCANOPT_PORTFOLIO") == 0
+             || strcasecmp(str, "UCLA_SCANOPT_PORTFOLIO") == 0) {
+    $1 = dft::ScanArchitectConfig::ScanOrderSolver::UclaScanOptPortfolio;
   } else if (strcasecmp(str, "SCANOPT") == 0
              || strcasecmp(str, "UCLA_SCANOPT") == 0) {
     $1 = dft::ScanArchitectConfig::ScanOrderSolver::UclaScanOpt;
@@ -227,6 +234,48 @@ void set_dft_config_scanopt_seed(int seed)
   }
 }
 
+void set_dft_config_scanopt_restarts(int restarts)
+{
+  if (restarts > 0) {
+    getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setScanOptRestarts(static_cast<uint64_t>(restarts));
+  }
+}
+
+void set_dft_config_scanopt_threads(int threads)
+{
+  if (threads > 0) {
+    getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setScanOptThreads(static_cast<uint64_t>(threads));
+  }
+}
+
+void set_dft_config_ucla_major_loops(int loops)
+{
+  if (loops > 0) {
+    getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setUclaMajorLoops(static_cast<uint64_t>(loops));
+  }
+}
+
+void set_dft_config_ucla_restarts(int restarts)
+{
+  if (restarts > 0) {
+    getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setUclaRestarts(static_cast<uint64_t>(restarts));
+  }
+}
+
+void set_dft_config_ucla_threads(int threads)
+{
+  if (threads > 0) {
+    getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setUclaThreads(static_cast<uint64_t>(threads));
+  }
+}
+
+void set_dft_config_ucla_time_limit(double seconds)
+{
+  if (seconds >= 0.0) {
+    getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setUclaTimeLimitSeconds(seconds);
+  }
+}
+
 void set_dft_config_scanopt_time_limit(double seconds)
 {
   if (seconds >= 0.0) {
@@ -257,6 +306,11 @@ void set_dft_config_vertical_weight(double weight)
 void set_dft_config_blockage_weight(double weight)
 {
   getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setBlockageWeight(weight);
+}
+
+void set_dft_config_virtual_pin_weight(double weight)
+{
+  getDft()->getMutableDftConfig()->getMutableScanArchitectConfig()->setVirtualPinWeight(weight);
 }
 
 void set_dft_config_timing_setup_weight(double weight)

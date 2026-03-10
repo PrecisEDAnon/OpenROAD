@@ -14,6 +14,7 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 include("openroad")
 
+find_package(ortools REQUIRED)
 
 if(USE_SYSTEM_OPENSTA)
   if(NOT OPENSTA_HOME)

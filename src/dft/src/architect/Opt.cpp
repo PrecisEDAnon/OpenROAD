@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -14,10 +15,12 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -26,6 +29,7 @@
 #include "ClockDomain.hh"
 #include "ScanCell.hh"
 #include "UclaScanOpt.hh"
+#include "VirtualNetGeometry.hh"
 #include "boost/geometry/core/cs.hpp"
 #include "boost/geometry/geometries/point.hpp"
 #include "boost/geometry/geometry.hpp"  // NOLINT(misc-include-cleaner)
@@ -44,7 +48,11 @@ namespace dft {
 
 namespace {
 constexpr int64_t kInfDistance = std::numeric_limits<int64_t>::max() / 8;
-constexpr int32_t kScanOptLargeCost = std::numeric_limits<int32_t>::max() / 16;
+// ScanOpt (ILS) uses an O(n^2) directed cost matrix stored as int32_t.
+// The PLACEMENT objective includes a superlinear long-edge ("jump") penalty,
+// which can exceed int32_max/16 for large hops; avoid premature clamping so the
+// optimizer can meaningfully distinguish very-long edges.
+constexpr int32_t kScanOptLargeCost = std::numeric_limits<int32_t>::max();
 
 // Manhattan nearest-neighbor scan (O(n^2)) is exact but quadratic; keep it for
 // moderately sized chains.
@@ -287,27 +295,6 @@ int64_t manhattanDist(const odb::Point& a,
   return dx + wy;
 }
 
-int64_t manhattanPointToRectDist(const odb::Point& p,
-                                 const odb::Rect& r,
-                                 double vertical_weight)
-{
-  int64_t dx = 0;
-  if (p.x() < r.xMin()) {
-    dx = static_cast<int64_t>(r.xMin()) - p.x();
-  } else if (p.x() > r.xMax()) {
-    dx = static_cast<int64_t>(p.x()) - r.xMax();
-  }
-
-  int64_t dy = 0;
-  if (p.y() < r.yMin()) {
-    dy = static_cast<int64_t>(r.yMin()) - p.y();
-  } else if (p.y() > r.yMax()) {
-    dy = static_cast<int64_t>(p.y()) - r.yMax();
-  }
-  const int64_t wy = static_cast<int64_t>(std::llround(vertical_weight * dy));
-  return dx + wy;
-}
-
 namespace {
 std::string UnescapeSlash(std::string_view input)
 {
@@ -517,8 +504,10 @@ UclaScanOptParams uclaParamsFromConfig(const ScanArchitectConfig& cfg)
 {
   UclaScanOptParams p;
   p.seed = cfg.getScanOptSeed();
-  // Map OpenROAD ScanOpt rounds (default 500k) to UCLA majorLoops (default 100).
-  p.major_loops = std::max<uint64_t>(1, cfg.getScanOptRounds() / 5000);
+  p.major_loops = cfg.getUclaMajorLoops();
+  p.restarts = cfg.getUclaRestarts();
+  p.time_limit_seconds = cfg.getUclaTimeLimitSeconds();
+  p.threads = cfg.getUclaThreads();
   p.n_descents = 5;
   p.kick_move = 15;
   p.n_near = 20;
@@ -528,65 +517,28 @@ UclaScanOptParams uclaParamsFromConfig(const ScanArchitectConfig& cfg)
   return p;
 }
 
-struct NetAccessGeometry
+bool isUclaScanOptpackSolver(const ScanArchitectConfig& cfg)
 {
-  std::vector<odb::Rect> boxes;
-  std::vector<odb::Point> terminals;
-};
-
-NetAccessGeometry buildNetAccessGeometry(odb::dbNet* net)
-{
-  NetAccessGeometry geom;
-  if (net == nullptr) {
-    return geom;
-  }
-
-  for (odb::dbGuide* guide : net->getGuides()) {
-    geom.boxes.push_back(guide->getBox());
-  }
-
-  if (geom.boxes.empty()) {
-    if (odb::dbWire* wire = net->getWire()) {
-      odb::dbWireShapeItr itr;
-      odb::dbShape shape;
-      for (itr.begin(wire); itr.next(shape);) {
-        geom.boxes.push_back(shape.getBox());
-      }
-    }
-  }
-
-  if (geom.boxes.empty()) {
-    for (odb::dbITerm* iterm : net->getITerms()) {
-      const odb::Rect bbox = iterm->getBBox();
-      geom.terminals.emplace_back(bbox.xMin(), bbox.yMin());
-    }
-    for (odb::dbBTerm* bterm : net->getBTerms()) {
-      const odb::Rect bbox = bterm->getBBox();
-      geom.terminals.emplace_back(bbox.xMin(), bbox.yMin());
-    }
-  }
-
-  return geom;
+  const auto s = cfg.getScanOrderSolver();
+  return s == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt
+         || s == ScanArchitectConfig::ScanOrderSolver::UclaScanOptPortfolio;
 }
 
-int64_t pinToNetDistance(const odb::Point& pin,
-                         const NetAccessGeometry& geom,
-                         double vertical_weight)
+std::vector<std::size_t> uclaScanOptpackOrder(
+    const ScanArchitectConfig& cfg,
+    const std::vector<std::string_view>& names,
+    const std::vector<std::pair<int, int>>& scan_in_pts,
+    const std::vector<std::pair<int, int>>& scan_out_pts,
+    const std::pair<int, int>& begin,
+    const std::pair<int, int>& end)
 {
-  int64_t best = kInfDistance;
-  for (const odb::Rect& box : geom.boxes) {
-    best = std::min(best, manhattanPointToRectDist(pin, box, vertical_weight));
-    if (best == 0) {
-      return 0;
-    }
+  const UclaScanOptParams params = uclaParamsFromConfig(cfg);
+  if (cfg.getScanOrderSolver()
+      == ScanArchitectConfig::ScanOrderSolver::UclaScanOptPortfolio) {
+    return UclaScanOptOrderPortfolio(
+        names, scan_in_pts, scan_out_pts, begin, end, params);
   }
-  for (const odb::Point& term : geom.terminals) {
-    best = std::min(best, manhattanDist(pin, term, vertical_weight));
-    if (best == 0) {
-      return 0;
-    }
-  }
-  return best == kInfDistance ? 0 : best;
+  return UclaScanOptOrder(names, scan_in_pts, scan_out_pts, begin, end, params);
 }
 
 struct BlockageModel
@@ -1790,6 +1742,250 @@ void scanOptDoubleBridgeKick(std::vector<std::size_t>& order,
   order.swap(kicked);
 }
 
+uint64_t splitmix64(uint64_t x)
+{
+  // http://xorshift.di.unimi.it/splitmix64.c
+  uint64_t z = x + 0x9e3779b97f4a7c15ULL;
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+
+bool lexLess(const std::vector<std::size_t>& a, const std::vector<std::size_t>& b)
+{
+  return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+}
+
+struct ScanOptRunResult
+{
+  int64_t best_cost = kInfDistance;
+  std::vector<std::size_t> best_order;
+};
+
+ScanOptRunResult runScanOptIlsOnce(
+    const ScanOptMatrix& m,
+    const std::vector<std::string_view>& names,
+    std::vector<std::size_t> order,
+    bool end_fixed,
+    const ScanArchitectConfig& config,
+    const std::optional<std::chrono::steady_clock::time_point>& deadline,
+    std::mt19937_64& rng)
+{
+  ScanOptRunResult out;
+  if (order.empty()) {
+    return out;
+  }
+
+  scanOptDescent(m, names, order, end_fixed, deadline);
+  out.best_cost = scanOptPathCost(m, order);
+  out.best_order = std::move(order);
+
+  const uint64_t rounds = config.getScanOptRounds();
+  if (!config.getScanOptTempControl()) {
+    for (uint64_t r = 0; r < rounds; ++r) {
+      if (scanOptTimeExpired(deadline)) {
+        break;
+      }
+      std::vector<std::size_t> cand = out.best_order;
+      scanOptDoubleBridgeKick(cand, rng, end_fixed);
+      scanOptDescent(m, names, cand, end_fixed, deadline);
+      const int64_t cand_cost = scanOptPathCost(m, cand);
+      if (cand_cost < out.best_cost) {
+        out.best_cost = cand_cost;
+        out.best_order.swap(cand);
+      }
+    }
+    return out;
+  }
+
+  constexpr int kNoImproveBeforeTemp = 3;
+  constexpr int kTempSteps = 3;
+
+  std::vector<std::size_t> cur_order = out.best_order;
+  int64_t cur_cost = out.best_cost;
+
+  double temperature = 0.0;
+  int no_improve = 0;
+  int temp_steps_left = 0;
+
+  const double t_div = config.getScanOptTDiv();
+  std::uniform_real_distribution<double> u01(0.0, 1.0);
+
+  for (uint64_t r = 0; r < rounds; ++r) {
+    if (scanOptTimeExpired(deadline)) {
+      break;
+    }
+    std::vector<std::size_t> cand = cur_order;
+    scanOptDoubleBridgeKick(cand, rng, end_fixed);
+    scanOptDescent(m, names, cand, end_fixed, deadline);
+    const int64_t cand_cost = scanOptPathCost(m, cand);
+
+    const int64_t delta = cand_cost - cur_cost;
+    if (delta < 0) {
+      cur_order.swap(cand);
+      cur_cost = cand_cost;
+      temperature = 0.0;
+      no_improve = 0;
+      temp_steps_left = 0;
+    } else {
+      no_improve++;
+      if (temperature == 0.0 && no_improve >= kNoImproveBeforeTemp) {
+        temperature = static_cast<double>(cur_cost) / t_div;
+        temp_steps_left = kTempSteps;
+        no_improve = 0;
+      }
+
+      bool accept = false;
+      if (temperature > 0.0) {
+        const double prob = std::exp(-static_cast<double>(delta) / temperature);
+        accept = u01(rng) < prob;
+        if (--temp_steps_left <= 0) {
+          temperature = 0.0;
+          no_improve = 0;
+        }
+      }
+      if (accept) {
+        cur_order.swap(cand);
+        cur_cost = cand_cost;
+      }
+    }
+
+    if (cur_cost < out.best_cost) {
+      out.best_cost = cur_cost;
+      out.best_order = cur_order;
+    }
+  }
+
+  return out;
+}
+
+std::vector<std::size_t> scanOptSolve(
+    const ScanOptMatrix& m,
+    const std::vector<std::string_view>& names,
+    std::size_t start_node,
+    const std::optional<std::size_t>& fixed_end,
+    const ScanArchitectConfig& config,
+    utl::Logger* logger,
+    const std::optional<std::chrono::steady_clock::time_point>& deadline)
+{
+  const bool end_fixed = fixed_end.has_value();
+
+  std::vector<std::size_t> base_order
+      = end_fixed ? scanOptGreedyOrderEndFixed(
+                        m, start_node, fixed_end.value(), names, logger)
+                  : scanOptGreedyOrder(m, start_node, names, logger);
+
+  uint64_t restarts = std::max<uint64_t>(1, config.getScanOptRestarts());
+  const uint64_t threads = std::max<uint64_t>(1, config.getScanOptThreads());
+
+  // A time limit only makes sense for multi-start. Default to "unlimited
+  // restarts" so the deadline is the dominant stop criterion.
+  if (deadline.has_value() && restarts <= 1 && threads > 1) {
+    restarts = std::numeric_limits<uint64_t>::max();
+  }
+
+  const bool use_multistart = (restarts > 1);
+  const bool use_threads = (threads > 1);
+  if (!use_multistart && !use_threads) {
+    std::mt19937_64 rng(config.getScanOptSeed());
+    const ScanOptRunResult best = runScanOptIlsOnce(
+        m, names, std::move(base_order), end_fixed, config, deadline, rng);
+    return best.best_order;
+  }
+
+  const uint64_t workers64 = std::min<uint64_t>(threads, restarts);
+  const unsigned workers = static_cast<unsigned>(std::max<uint64_t>(1, workers64));
+
+  std::atomic<uint64_t> next_restart{0};
+  std::mutex best_mu;
+  ScanOptRunResult best;
+  best.best_order = base_order;
+  best.best_cost = scanOptPathCost(m, best.best_order);
+  std::atomic<int64_t> best_cost_atomic{best.best_cost};
+
+  auto worker_fn = [&](unsigned /*worker_id*/) {
+    while (true) {
+      const uint64_t restart_id = next_restart.fetch_add(1);
+      if (restart_id >= restarts) {
+        break;
+      }
+      if (scanOptTimeExpired(deadline)) {
+        break;
+      }
+
+      const uint64_t seed64
+          = (restart_id == 0)
+                ? config.getScanOptSeed()
+                : splitmix64(config.getScanOptSeed()
+                             ^ (restart_id * 0x9e3779b97f4a7c15ULL));
+      std::mt19937_64 rng(seed64);
+
+      std::vector<std::size_t> init = base_order;
+      if (restart_id != 0) {
+        const uint64_t mode = restart_id % 4;
+        if (mode == 0) {
+          scanOptDoubleBridgeKick(init, rng, end_fixed);
+        } else if (mode == 1) {
+          if (end_fixed && init.size() > 2) {
+            std::shuffle(init.begin() + 1, init.end() - 1, rng);
+          } else if (!end_fixed && init.size() > 1) {
+            std::shuffle(init.begin() + 1, init.end(), rng);
+          }
+        } else if (mode == 2) {
+          scanOptDoubleBridgeKick(init, rng, end_fixed);
+          scanOptDoubleBridgeKick(init, rng, end_fixed);
+        } else {
+          scanOptDoubleBridgeKick(init, rng, end_fixed);
+          if (end_fixed && init.size() > 4) {
+            std::uniform_int_distribution<std::size_t> dist(1, init.size() - 3);
+            std::size_t a = dist(rng);
+            std::size_t b = dist(rng);
+            if (a > b) {
+              std::swap(a, b);
+            }
+            if (b > a + 1) {
+              std::reverse(init.begin() + static_cast<std::ptrdiff_t>(a),
+                           init.begin() + static_cast<std::ptrdiff_t>(b));
+            }
+          }
+        }
+      }
+
+      ScanOptRunResult local_best
+          = runScanOptIlsOnce(m, names, std::move(init), end_fixed, config, deadline, rng);
+
+      const int64_t local_cost = local_best.best_cost;
+      if (local_best.best_order.empty()) {
+        continue;
+      }
+
+      if (local_cost > best_cost_atomic.load()) {
+        continue;
+      }
+
+      std::lock_guard<std::mutex> lock(best_mu);
+      if (local_cost < best.best_cost
+          || (local_cost == best.best_cost
+              && lexLess(local_best.best_order, best.best_order))) {
+        best.best_cost = local_cost;
+        best.best_order = std::move(local_best.best_order);
+        best_cost_atomic.store(local_cost);
+      }
+    }
+  };
+
+  std::vector<std::thread> pool;
+  pool.reserve(workers);
+  for (unsigned i = 0; i < workers; ++i) {
+    pool.emplace_back(worker_fn, i);
+  }
+  for (auto& t : pool) {
+    t.join();
+  }
+
+  return best.best_order;
+}
+
 struct UnionFind
 {
   explicit UnionFind(std::size_t n) : parent(n), rank(n, 0)
@@ -1886,92 +2082,15 @@ std::vector<std::size_t> orderNodesByCost(
       scanopt_names.push_back(kEndName);
     }
 
-    std::vector<std::size_t> best_order
-        = end_fixed ? scanOptGreedyOrderEndFixed(m,
-                                                 start,
-                                                 n,
-                                                 scanopt_names,
-                                                 logger)
-                    : scanOptGreedyOrder(m, start, scanopt_names, logger);
-    scanOptDescent(m, scanopt_names, best_order, end_fixed, deadline);
-    int64_t best_cost = scanOptPathCost(m, best_order);
-
-    std::mt19937_64 rng(config.getScanOptSeed());
-    const uint64_t rounds = config.getScanOptRounds();
-    if (!config.getScanOptTempControl()) {
-      for (uint64_t r = 0; r < rounds; ++r) {
-        if (scanOptTimeExpired(deadline)) {
-          break;
-        }
-        std::vector<std::size_t> cand = best_order;
-        scanOptDoubleBridgeKick(cand, rng, end_fixed);
-        scanOptDescent(m, scanopt_names, cand, end_fixed, deadline);
-        const int64_t cand_cost = scanOptPathCost(m, cand);
-        if (cand_cost < best_cost) {
-          best_cost = cand_cost;
-          best_order.swap(cand);
-        }
-      }
-    } else {
-      constexpr int kNoImproveBeforeTemp = 3;
-      constexpr int kTempSteps = 3;
-
-      std::vector<std::size_t> cur_order = best_order;
-      int64_t cur_cost = best_cost;
-
-      double temperature = 0.0;
-      int no_improve = 0;
-      int temp_steps_left = 0;
-
-      const double t_div = config.getScanOptTDiv();
-      std::uniform_real_distribution<double> u01(0.0, 1.0);
-
-      for (uint64_t r = 0; r < rounds; ++r) {
-        if (scanOptTimeExpired(deadline)) {
-          break;
-        }
-        std::vector<std::size_t> cand = cur_order;
-        scanOptDoubleBridgeKick(cand, rng, end_fixed);
-        scanOptDescent(m, scanopt_names, cand, end_fixed, deadline);
-        const int64_t cand_cost = scanOptPathCost(m, cand);
-
-        const int64_t delta = cand_cost - cur_cost;
-        if (delta < 0) {
-          cur_order.swap(cand);
-          cur_cost = cand_cost;
-          temperature = 0.0;
-          no_improve = 0;
-          temp_steps_left = 0;
-        } else {
-          no_improve++;
-          if (temperature == 0.0 && no_improve >= kNoImproveBeforeTemp) {
-            temperature = static_cast<double>(cur_cost) / t_div;
-            temp_steps_left = kTempSteps;
-            no_improve = 0;
-          }
-
-          bool accept = false;
-          if (temperature > 0.0) {
-            const double prob
-                = std::exp(-static_cast<double>(delta) / temperature);
-            accept = u01(rng) < prob;
-            if (--temp_steps_left <= 0) {
-              temperature = 0.0;
-              no_improve = 0;
-            }
-          }
-          if (accept) {
-            cur_order.swap(cand);
-            cur_cost = cand_cost;
-          }
-        }
-
-        if (cur_cost < best_cost) {
-          best_cost = cur_cost;
-          best_order = cur_order;
-        }
-      }
-    }
+    const std::optional<std::size_t> fixed_end_node
+        = end_fixed ? std::optional<std::size_t>(n) : std::nullopt;
+    std::vector<std::size_t> best_order = scanOptSolve(m,
+                                                       scanopt_names,
+                                                       start,
+                                                       fixed_end_node,
+                                                       config,
+                                                       logger,
+                                                       deadline);
 
     if (end_fixed) {
       if (!best_order.empty() && best_order.back() == n) {
@@ -2347,8 +2466,7 @@ void optimizeScanWirelengthWithConstraints(
       return edge_cost(seg_exit[a], seg_entry[b]);
     };
     std::vector<std::size_t> seg_order;
-    if (config.getScanOrderSolver()
-        == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt) {
+    if (isUclaScanOptpackSolver(config)) {
       std::vector<odb::Point> seg_in_pts;
       std::vector<odb::Point> seg_out_pts;
       std::vector<std::pair<int, int>> in_pts;
@@ -2372,13 +2490,13 @@ void optimizeScanWirelengthWithConstraints(
           = inferUclaEndPoint(seg_out_pts, seg_names, std::nullopt, u_begin);
 
       try {
-        seg_order = UclaScanOptOrder(
+        seg_order = uclaScanOptpackOrder(
+            config,
             seg_names,
             in_pts,
             out_pts,
             std::make_pair(u_begin.x(), u_begin.y()),
-            std::make_pair(u_end.x(), u_end.y()),
-            uclaParamsFromConfig(config));
+            std::make_pair(u_end.x(), u_end.y()));
       } catch (const std::exception&) {
         seg_order.clear();
       }
@@ -2483,8 +2601,7 @@ void optimizeScanWirelengthWithConstraints(
     }
 
     std::optional<std::vector<std::size_t>> ucla_rank;
-    if (config.getScanOrderSolver()
-        == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt) {
+    if (isUclaScanOptpackSolver(config)) {
       std::vector<std::string_view> comp_names;
       std::vector<odb::Point> comp_in_pts;
       std::vector<odb::Point> comp_out_pts;
@@ -2512,13 +2629,13 @@ void optimizeScanWirelengthWithConstraints(
           = inferUclaEndPoint(comp_out_pts, comp_names, end_pt, u_begin);
 
       try {
-        const std::vector<std::size_t> pref = UclaScanOptOrder(
+        const std::vector<std::size_t> pref = uclaScanOptpackOrder(
+            config,
             comp_names,
             in_pts,
             out_pts,
             std::make_pair(u_begin.x(), u_begin.y()),
-            std::make_pair(u_end.x(), u_end.y()),
-            uclaParamsFromConfig(config));
+            std::make_pair(u_end.x(), u_end.y()));
         if (pref.size() == cn) {
           ucla_rank = std::vector<std::size_t>(cn, 0);
           for (std::size_t pos = 0; pos < cn; ++pos) {
@@ -2682,8 +2799,7 @@ void optimizeScanWirelengthWithConstraints(
       }
 
       std::vector<std::size_t> comp_order;
-      if (config.getScanOrderSolver()
-          == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt) {
+      if (isUclaScanOptpackSolver(config)) {
         std::vector<odb::Point> comp_in_pts;
         std::vector<odb::Point> comp_out_pts;
         std::vector<std::pair<int, int>> in_pts;
@@ -2718,13 +2834,13 @@ void optimizeScanWirelengthWithConstraints(
             = inferUclaEndPoint(comp_out_pts, comp_names, bucket_end, u_begin);
 
         try {
-          comp_order = UclaScanOptOrder(
+          comp_order = uclaScanOptpackOrder(
+              config,
               comp_names,
               in_pts,
               out_pts,
               std::make_pair(u_begin.x(), u_begin.y()),
-              std::make_pair(u_end.x(), u_end.y()),
-              uclaParamsFromConfig(config));
+              std::make_pair(u_end.x(), u_end.y()));
         } catch (const std::exception&) {
           comp_order.clear();
         }
@@ -2786,6 +2902,7 @@ void OptimizeScanWirelengthPinToNet(std::vector<std::unique_ptr<ScanCell>>& cell
   }
 
   const double blockage_weight = config.getBlockageWeight();
+  const double virtual_pin_weight = config.getVirtualPinWeight();
 
   std::optional<odb::Point> begin;
   std::optional<odb::Point> end;
@@ -2827,7 +2944,7 @@ void OptimizeScanWirelengthPinToNet(std::vector<std::unique_ptr<ScanCell>>& cell
   scan_out_pts.reserve(n);
   std::vector<std::string_view> names;
   names.reserve(n);
-  std::vector<NetAccessGeometry> net_geoms;
+  std::vector<VirtualSubnet> net_geoms;
   net_geoms.reserve(n);
   std::vector<double> timing_mul;
   timing_mul.reserve(n);
@@ -2839,7 +2956,7 @@ void OptimizeScanWirelengthPinToNet(std::vector<std::unique_ptr<ScanCell>>& cell
 
     scan_in_pts.emplace_back(cell->getScanIn().getLocation(origin));
     scan_out_pts.emplace_back(cell->getScanOut().getLocation(origin));
-    net_geoms.emplace_back(buildNetAccessGeometry(cell->getScanOut().getNet()));
+    net_geoms.emplace_back(buildVirtualSubnetFromNet(cell->getScanOut().getNet()));
     timing_mul.emplace_back(timingMultiplierForCell(config, *cell));
   }
 
@@ -2894,15 +3011,21 @@ void OptimizeScanWirelengthPinToNet(std::vector<std::unique_ptr<ScanCell>>& cell
     // - direct pin-to-pin Manhattan encourages spatial locality to avoid
     //   visually/physically "jumpy" chains when many candidates tie at 0 in the
     //   pin-to-net metric (e.g., long functional nets spanning the core).
-    const int64_t p2n
-        = pinToNetDistance(scan_in_pts[dst], net_geoms[src], vertical_weight);
+    const VirtualPinResult p2n_res
+        = distanceToVirtualSubnet(scan_in_pts[dst], net_geoms[src], vertical_weight);
+    const int64_t p2n = p2n_res.valid() ? p2n_res.dist : 0;
+    int64_t vpin_pen = 0;
+    if (virtual_pin_weight > 0.0 && p2n_res.valid()) {
+      const int64_t vpin_dist
+          = manhattanDist(scan_out_pts[src], p2n_res.closest, vertical_weight);
+      vpin_pen = scaleEdgeCost(vpin_dist, virtual_pin_weight);
+    }
     const int64_t man
         = manhattanDist(scan_out_pts[src], scan_in_pts[dst], vertical_weight);
     const int64_t jump_pen = jumpPenaltyFromManhattan(man, local_scale);
     const int64_t blk = blockage_cost(scan_out_pts[src], scan_in_pts[dst]);
-    if (p2n != 0 || !net_geoms[src].boxes.empty()
-        || !net_geoms[src].terminals.empty()) {
-      return scaleEdgeCost(p2n + man + jump_pen + blk, timing_mul[src]);
+    if (p2n != 0 || !net_geoms[src].empty()) {
+      return scaleEdgeCost(p2n + man + jump_pen + blk + vpin_pen, timing_mul[src]);
     }
     // No routing/pin geometry available; fall back to pin-based Manhattan.
     return scaleEdgeCost(man + jump_pen + blk, timing_mul[src]);
@@ -2992,95 +3115,15 @@ void OptimizeScanWirelengthPinToNet(std::vector<std::unique_ptr<ScanCell>>& cell
         scanopt_names.push_back(kEndName);
       }
 
-      std::vector<std::size_t> best_order
-          = end_fixed ? scanOptGreedyOrderEndFixed(m,
-                                                   start_node,
-                                                   end_node,
-                                                   scanopt_names,
-                                                   logger)
-                      : scanOptGreedyOrder(m,
-                                           start_node,
-                                           scanopt_names,
-                                           logger);
-      scanOptDescent(m, scanopt_names, best_order, end_fixed, deadline);
-      int64_t best_cost = scanOptPathCost(m, best_order);
-
-      std::mt19937_64 rng(config.getScanOptSeed());
-      const uint64_t rounds = config.getScanOptRounds();
-      if (!config.getScanOptTempControl()) {
-        for (uint64_t r = 0; r < rounds; ++r) {
-          if (scanOptTimeExpired(deadline)) {
-            break;
-          }
-          std::vector<std::size_t> cand = best_order;
-          scanOptDoubleBridgeKick(cand, rng, end_fixed);
-          scanOptDescent(m, scanopt_names, cand, end_fixed, deadline);
-          const int64_t cand_cost = scanOptPathCost(m, cand);
-          if (cand_cost < best_cost) {
-            best_cost = cand_cost;
-            best_order.swap(cand);
-          }
-        }
-      } else {
-        constexpr int kNoImproveBeforeTemp = 3;
-        constexpr int kTempSteps = 3;
-
-        std::vector<std::size_t> cur_order = best_order;
-        int64_t cur_cost = best_cost;
-
-        double temperature = 0.0;
-        int no_improve = 0;
-        int temp_steps_left = 0;
-
-        const double t_div = config.getScanOptTDiv();
-        std::uniform_real_distribution<double> u01(0.0, 1.0);
-
-        for (uint64_t r = 0; r < rounds; ++r) {
-          if (scanOptTimeExpired(deadline)) {
-            break;
-          }
-          std::vector<std::size_t> cand = cur_order;
-          scanOptDoubleBridgeKick(cand, rng, end_fixed);
-          scanOptDescent(m, scanopt_names, cand, end_fixed, deadline);
-          const int64_t cand_cost = scanOptPathCost(m, cand);
-
-          const int64_t delta = cand_cost - cur_cost;
-          if (delta < 0) {
-            cur_order.swap(cand);
-            cur_cost = cand_cost;
-            temperature = 0.0;
-            no_improve = 0;
-            temp_steps_left = 0;
-          } else {
-            no_improve++;
-            if (temperature == 0.0 && no_improve >= kNoImproveBeforeTemp) {
-              temperature = static_cast<double>(cur_cost) / t_div;
-              temp_steps_left = kTempSteps;
-              no_improve = 0;
-            }
-
-            bool accept = false;
-            if (temperature > 0.0) {
-              const double prob
-                  = std::exp(-static_cast<double>(delta) / temperature);
-              accept = u01(rng) < prob;
-              if (--temp_steps_left <= 0) {
-                temperature = 0.0;
-                no_improve = 0;
-              }
-            }
-            if (accept) {
-              cur_order.swap(cand);
-              cur_cost = cand_cost;
-            }
-          }
-
-          if (cur_cost < best_cost) {
-            best_cost = cur_cost;
-            best_order = cur_order;
-          }
-        }
-      }
+      const std::optional<std::size_t> fixed_end_node
+          = end_fixed ? std::optional<std::size_t>(end_node) : std::nullopt;
+      std::vector<std::size_t> best_order = scanOptSolve(m,
+                                                         scanopt_names,
+                                                         start_node,
+                                                         fixed_end_node,
+                                                         config,
+                                                         logger,
+                                                         deadline);
 
       std::vector<std::unique_ptr<ScanCell>> ordered;
       ordered.reserve(n);
@@ -3474,8 +3517,7 @@ void OptimizeScanWirelength(
 
   if (config.getScanOrderMetric()
       == ScanArchitectConfig::ScanOrderMetric::PinToNet) {
-    if (config.getScanOrderSolver()
-        == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt) {
+    if (isUclaScanOptpackSolver(config)) {
       cfg_override = config;
       cfg_override->setScanOrderSolver(
           ScanArchitectConfig::ScanOrderSolver::ScanOpt);
@@ -3490,9 +3532,7 @@ void OptimizeScanWirelength(
     return;
   }
 
-  if (config.getScanOrderSolver()
-          == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt
-      && !has_constraints) {
+  if (isUclaScanOptpackSolver(config) && !has_constraints) {
     cfg_override = config;
     cfg_override->setScanOrderSolver(ScanArchitectConfig::ScanOrderSolver::ScanOpt);
     cfg = &cfg_override.value();
@@ -3589,9 +3629,7 @@ void OptimizeScanWirelength(
   // to run it. When begin/end points aren't available yet (e.g., scan ports
   // have not been created/placed), synthesize them from scan-pin locations so
   // the solver still runs.
-  if (config.getScanOrderSolver()
-          == ScanArchitectConfig::ScanOrderSolver::UclaScanOpt
-      && !has_constraints) {
+  if (isUclaScanOptpackSolver(config) && !has_constraints) {
     const odb::Point u_begin
         = inferUclaBeginPoint(scan_in_pts, names, begin, end, std::nullopt);
     const odb::Point u_end = inferUclaEndPoint(scan_out_pts, names, end, u_begin);
@@ -3607,13 +3645,13 @@ void OptimizeScanWirelength(
 
     std::vector<std::size_t> order;
     try {
-      order = UclaScanOptOrder(
+      order = uclaScanOptpackOrder(
+          config,
           names,
           in_pts,
           out_pts,
           std::make_pair(u_begin.x(), u_begin.y()),
-          std::make_pair(u_end.x(), u_end.y()),
-          uclaParamsFromConfig(config));
+          std::make_pair(u_end.x(), u_end.y()));
     } catch (const std::exception& e) {
       logger->warn(utl::DFT,
                    188,
@@ -3688,7 +3726,7 @@ void OptimizeScanWirelength(
 
   if (cfg->getScanOrderSolver()
       == ScanArchitectConfig::ScanOrderSolver::ScanOpt) {
-    const auto deadline = scanOptDeadline(config);
+    const auto deadline = scanOptDeadline(*cfg);
 
     const bool have_begin = begin.has_value();
     const bool have_end = end.has_value();
@@ -3753,95 +3791,15 @@ void OptimizeScanWirelength(
         scanopt_names.push_back(kEndName);
       }
 
-      std::vector<std::size_t> best_order
-          = end_fixed ? scanOptGreedyOrderEndFixed(m,
-                                                   start_node,
-                                                   end_node,
-                                                   scanopt_names,
-                                                   logger)
-                      : scanOptGreedyOrder(m,
-                                           start_node,
-                                           scanopt_names,
-                                           logger);
-      scanOptDescent(m, scanopt_names, best_order, end_fixed, deadline);
-      int64_t best_cost = scanOptPathCost(m, best_order);
-
-      std::mt19937_64 rng(config.getScanOptSeed());
-      const uint64_t rounds = config.getScanOptRounds();
-      if (!config.getScanOptTempControl()) {
-        for (uint64_t r = 0; r < rounds; ++r) {
-          if (scanOptTimeExpired(deadline)) {
-            break;
-          }
-          std::vector<std::size_t> cand = best_order;
-          scanOptDoubleBridgeKick(cand, rng, end_fixed);
-          scanOptDescent(m, scanopt_names, cand, end_fixed, deadline);
-          const int64_t cand_cost = scanOptPathCost(m, cand);
-          if (cand_cost < best_cost) {
-            best_cost = cand_cost;
-            best_order.swap(cand);
-          }
-        }
-      } else {
-        constexpr int kNoImproveBeforeTemp = 3;
-        constexpr int kTempSteps = 3;
-
-        std::vector<std::size_t> cur_order = best_order;
-        int64_t cur_cost = best_cost;
-
-        double temperature = 0.0;
-        int no_improve = 0;
-        int temp_steps_left = 0;
-
-        const double t_div = config.getScanOptTDiv();
-        std::uniform_real_distribution<double> u01(0.0, 1.0);
-
-        for (uint64_t r = 0; r < rounds; ++r) {
-          if (scanOptTimeExpired(deadline)) {
-            break;
-          }
-          std::vector<std::size_t> cand = cur_order;
-          scanOptDoubleBridgeKick(cand, rng, end_fixed);
-          scanOptDescent(m, scanopt_names, cand, end_fixed, deadline);
-          const int64_t cand_cost = scanOptPathCost(m, cand);
-
-          const int64_t delta = cand_cost - cur_cost;
-          if (delta < 0) {
-            cur_order.swap(cand);
-            cur_cost = cand_cost;
-            temperature = 0.0;
-            no_improve = 0;
-            temp_steps_left = 0;
-          } else {
-            no_improve++;
-            if (temperature == 0.0 && no_improve >= kNoImproveBeforeTemp) {
-              temperature = static_cast<double>(cur_cost) / t_div;
-              temp_steps_left = kTempSteps;
-              no_improve = 0;
-            }
-
-            bool accept = false;
-            if (temperature > 0.0) {
-              const double prob
-                  = std::exp(-static_cast<double>(delta) / temperature);
-              accept = u01(rng) < prob;
-              if (--temp_steps_left <= 0) {
-                temperature = 0.0;
-                no_improve = 0;
-              }
-            }
-            if (accept) {
-              cur_order.swap(cand);
-              cur_cost = cand_cost;
-            }
-          }
-
-          if (cur_cost < best_cost) {
-            best_cost = cur_cost;
-            best_order = cur_order;
-          }
-        }
-      }
+      const std::optional<std::size_t> fixed_end_node
+          = end_fixed ? std::optional<std::size_t>(end_node) : std::nullopt;
+      std::vector<std::size_t> best_order = scanOptSolve(m,
+                                                         scanopt_names,
+                                                         start_node,
+                                                         fixed_end_node,
+                                                         *cfg,
+                                                         logger,
+                                                         deadline);
 
       std::vector<std::unique_ptr<ScanCell>> ordered;
       ordered.reserve(n);
